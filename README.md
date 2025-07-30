@@ -16,7 +16,6 @@ To build the interpreter, just run `./build.sh` (you need to have gcc installed)
 ## Table of Contents
 
 - [Table of Contents](#table-of-contents)
-- [Why is it called PawScript](#why-is-it-called-pawscript)
 - [Specification](#specification)
   - [Types](#types)
   - [Structs](#structs)
@@ -36,15 +35,19 @@ To build the interpreter, just run `./build.sh` (you need to have gcc installed)
   - [Symbol Blacklist/Whitelist](#symbol-blacklistwhitelist)
   - [Reflection](#reflection)
   - [Windows Difficulties](#windows-difficulties)
+- [FAQ](#faq)
+  - [Why is it called PawScript?](#why-is-it-called-pawscript)
+  - [Why not Lua?](#why-not-lua)
+  - [Where are unions?](#where-are-unions)
+  - [No struct-by-value?](#no-struct-by-value)
+  - [Where's the standard library?](#wheres-the-standard-library)
+  - [Why does the ternary syntax look so weird?](#why-does-the-ternary-syntax-look-so-weird)
+  - [What is the use case?](#what-is-the-use-case)
 - [The Future](#the-future)
   - [Types as variables](#types-as-variables)
   - [Closures](#closures)
   - [Bytecode Compiler](#bytecode-compiler)
   - [Error Handling](#error-handling)
-
-## Why is it called PawScript
-
-i like cats :3
 
 ## Specification
 
@@ -158,6 +161,25 @@ func {
 }
 ```
 This enables support for mutual recursion.
+
+If you put a function inside a struct and then call the function, you can use the `this` variable inside the function to refer to the struct:
+```
+struct SomeStruct {
+  s32 value;
+  void() func;
+};
+
+// func implementation
+void() global_func {
+  this.value = 5;
+}
+
+some_struct.func = global_func;
+
+some_struct.value = 3;
+some_struct.func();
+some_struct.value; // 5
+```
 
 ### Statements
 
@@ -665,6 +687,39 @@ size_t function_info.num_args               // number of arguments
 ### Windows Difficulties
 
 On UNIX-like systems by default, all non-static symbols are visible for other programs like `readelf`, or even to itself using `dlsym`. Windows doesn't play nice with this. You have to **explicitly** tell the linker to make your symbols visible using `__declspec(dllexport)` or with an export table you provide to the linker. Either that, or you have to compile your program as a library, and then write a small program to load that library and run its main function. It's convoluted, but let's be real, that's the average C/C++ developer experience on Windows.
+
+## FAQ
+
+### Why is it called PawScript?
+
+i like cats :3
+
+### Why not Lua?
+
+Lua's C interop is...painful. It requires glue code and codegen tools, so this langauge is designed to offload that pain.
+
+### Where are unions?
+
+I figured that the field offset feature (`@`) effectively replaces unions, you can just set all fields to 0.
+
+### No struct-by-value?
+
+There are several reasons why I decided to now allow non-pointer structs.
+The main reason is that I'd be required to handle struct variables and scalar variables separately, effectively doubling the size of the codebase.
+Another reason is ABIs. ABIs are notoriously difficult to understand when it comes to structs in calls, and I simply didn't want to deal with it.
+
+### Where's the standard library?
+
+PawScript doesn't have a standard library for a simple reason. There's no need to! Look in the "stdc" folder in this repo, there are .paw "header" files that define stdc functions.
+
+### Why does the ternary syntax look so weird?
+
+The reason why I opted for `if cond -> [a; b]` is because of the way the interpreter parses expressions.
+I need to have a clear start and end of operands, so `if` serves as the beginning and `]` serves as the end.
+
+### What is the use case?
+
+This language is not general purpose. It can be used as a general purpose language, but the main use case is a scriptable modding layer for C game engines.
 
 ## The Future
 
