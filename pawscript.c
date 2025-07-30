@@ -3981,7 +3981,9 @@ bool pawscript_set(PawScriptContext* context, const char* name, void* in) {
     Variable* variable = pawscript_find_variable(context, name);
     if (!variable) return false;
     if (variable->type->is_const) return false;
-    memcpy(variable->address, in, pawscript_sizeof(variable->type));
+    if (variable->type->kind == TYPE_FUNCTION) memcpy(variable->address, &in, 8);
+    else memcpy(variable->address, in, pawscript_sizeof(variable->type));
+    pawscript_make_native(variable->type, true);
     return true;
 }
 
