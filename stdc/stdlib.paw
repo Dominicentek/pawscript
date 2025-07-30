@@ -1,0 +1,29 @@
+const s32 errno = __builtin_errno;
+
+extern f64(const s8* nptr) atof;
+extern s32(const s8* nptr) atoi;
+extern s64(const s8* nptr) atol, atoll;
+extern s32(s8* s, u64 n, const s8* format, f64 fp) strfromd;
+extern s32(s8* s, u64 n, const s8* format, f32 fp) strfromf;
+extern f64(const s8* nptr, s8** endptr) strtod, strtold;
+extern f32(const s8* nptr, s8** endptr) strtof;
+extern s64(const s8* nptr, s8** endptr, s32 base) strtol, strtoll;
+extern u64(const s8* nptr, s8** endptr, s32 base) strtoul, strtoull;
+
+extern s32() rand;
+extern void(u32 seed) srand;
+extern void*(u64 nmemb, u64 size) calloc;
+extern void(void* ptr) free;
+extern void*(u64 size) malloc;
+extern void*(void* ptr, u64 size) realloc;
+extern void() abort;
+extern void(s32 status) exit;
+extern s8*(const s8* name) getenv;
+extern s32(const s8* string) system;
+extern void*(const void* key, const void* base, u64 nmemb, u64 size, s32(const void* a, const void* b) compar) bsearch;
+extern void(void* base, u64 nmemb, u64 size, s32(const void* a, const void* b) compar) qsort;
+extern s32(s32 j) abs;
+extern s64(s64 j) labs, llabs;
+extern s32(s32 numer, s32 denom) div;
+extern s64(s64 numer, s64 denom) ldiv, lldiv;
+extern s32(const s8* s, u64 n) mblen;

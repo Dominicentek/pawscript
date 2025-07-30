@@ -1,0 +1,8 @@
+include "ctype.paw"
+include "math.paw"
+include "signal.paw"
+include "stdio.paw"
+include "stdlib.paw"
+include "string.paw"
+include "time.paw"
+include "platform.paw"

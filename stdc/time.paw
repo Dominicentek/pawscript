@@ -1,0 +1,29 @@
+struct tm {
+    s32 tm_sec;
+    s32 tm_min;
+    s32 tm_hour;
+    s32 tm_mday;
+    s32 tm_mon;
+    s32 tm_year;
+    s32 tm_wday;
+    s32 tm_yday;
+    s32 tm_isdst;
+};
+
+struct timespec {
+    s64 tv_sec;
+    s64 tv_nsec;
+};
+
+extern s64() clock;
+extern f64(s64 time1, s64 time0) difftime;
+extern s64(tm* timeptr) mktime;
+extern s64(tm* timeptr) timegm;
+extern s64(s64* timer) time;
+extern s32(timespec* ts, s32 base) timespec_get;
+extern s32(timespec* ts, s32 base) timespec_getres;
+extern tm*(s64* timer) gmtime;
+extern tm*(s64* timer, tm* buf) gmtime_r;
+extern tm*(s64* timer) localtime;
+extern tm*(s64* timer, tm* buf) localtime_r;
+extern u64(s8* s, u64 maxsize, const s8* format, tm* timeptr) strftime;

@@ -1,0 +1,9 @@
+const s32 SIGABRT = __builtin_SIGABRT;
+const s32 SIBFPE = __builtin_SIGFPE;
+const s32 SIGILL = __builtin_SIGILL;
+const s32 SIGINT = __builtin_SIGINT;
+const s32 SIBSEGV = __builtin_SIGSEGV;
+const s32 SIGTERM = __builtin_SIGTERM;
+
+extern void(s32 signum)(s32 sig, void(s32 signum) func) signal;
+extern s32(s32 sig) raise;

@@ -1,0 +1,47 @@
+typedef void FILE;
+
+const FILE* stdin = __builtin_stdin;
+const FILE* stdout = __builtin_stdout;
+const FILE* stderr = __builtin_stderr;
+
+const s32 EOF = __builtin_EOF;
+const s32 SEEK_SET = __builtin_SEEK_SET;
+const s32 SEEK_CUR = __builtin_SEEK_CUR;
+const s32 SEEK_END = __builtin_SEEK_END;
+
+extern s32(const s8* filename) remove;
+extern s32(const s8* oldname, const s8* newname) rename;
+extern FILE*() tmpfile;
+extern s8*(s8* s) tmpnam;
+extern s32(FILE* stream) fclose;
+extern s32(FILE* stream) fflush;
+extern FILE*(const s8* filename, const s8* mode) fopen;
+extern FILE*(const s8* filename, const s8* mode, FILE* stream) freopen;
+extern void(FILE* stream, s8* buf) setbuf;
+extern s32(FILE* stream, s8* buf, s32 mode, u64 size) setvbuf;
+extern s32(const s8* format, ...) printf;
+extern s32(const s8* format, ...) scanf;
+extern s32(s8* s, u64 n, const s8* format, ...) snprintf;
+extern s32(s8* s, const s8* format, ...) sprintf;
+extern s32(const s8* s, const s8* format, ...) sscanf;
+extern s32(FILE* stream) fgetc;
+extern s8*(s8* s, s32 n, FILE* stream) fgets;
+extern s32(s32 c, FILE* stream) fputc;
+extern s32(const s8* s, FILE* stream) fputs;
+extern s32(FILE* stream) getc;
+extern s32() getchar;
+extern s32(s32 c, FILE* stream) putc;
+extern s32(s32 c) putchar;
+extern s32(s8* s) puts;
+extern s32(s32 c, FILE* stream) ungetc;
+extern u64(void* ptr, u64 size, u64 nmemb, FILE* stream) fread;
+extern u64(const void* ptr, u64 size, u64 nmemb, FILE* stream) fwrite;
+extern s32(FILE* stream, s64 offset, s32 whence) fseek;
+extern s64(FILE* stream) ftell;
+extern void(FILE* stream) rewind;
+extern void(FILE* stream) clearerr;
+extern s32(FILE* stream) feof;
+extern s32(FILE* stream) ferror;
+extern void(const s8* s) perror;
+extern s32(FILE* stream, const s8* format, ...) fprintf;
+extern s32(FILE* stream, const s8* format, ...) fscanf;
