@@ -125,8 +125,11 @@ TOKENS(
     KEYWORD(true),
     KEYWORD(false),
     KEYWORD(null),
-    KEYWORD(sizeof),
+    KEYWORD(this),
+    KEYWORD(infoof),
     KEYWORD(offsetof),
+    KEYWORD(scopeof),
+    KEYWORD(sizeof),
     KEYWORD(bool),
     KEYWORD(u8),
     KEYWORD(u16),
@@ -1397,12 +1400,15 @@ static void pawscript_pop_scope(PawScriptContext* context) {
     free(scope);
 }
 
-static Variable* pawscript_find_variable(PawScriptContext* context, const char* name) {
+static Variable* pawscript_find_variable(PawScriptContext* context, const char* name, PawScriptScope** out_scope) {
     PawScriptScope* scope = context->scope;
     bool out_of_function = false;
     while (scope) {
         if (!out_of_function || scope->parent == NULL) for (size_t i = 0; i < scope->num_variables; i++) {
-            if (strcmp(scope->variables[i]->type->name, name) == 0) return scope->variables[i];
+            if (strcmp(scope->variables[i]->type->name, name) == 0) {
+                if (out_scope) *out_scope = scope;
+                return scope->variables[i];
+            }
         }
         if (scope->type == SCOPE_FUNCTION) out_of_function = true;
         scope = scope->parent;
@@ -1448,7 +1454,7 @@ static bool pawscript_declare_type(PawScriptContext* context, Type* type) {
         }
     }
     if (pawscript_find_type(context, type->name)) return false;
-    if (pawscript_find_variable(context, type->name)) return false;
+    if (pawscript_find_variable(context, type->name, NULL)) return false;
     scope->num_typedefs++;
     scope->typedefs = realloc(scope->typedefs, sizeof(Type*) * scope->num_typedefs);
     scope->typedefs[scope->num_typedefs - 1] = pawscript_make_original(pawscript_copy_type(type));
@@ -1476,7 +1482,11 @@ static size_t pawscript_alignof(Type* type) {
 }
 
 static size_t pawscript_get_offset(Type* structure, Type* field) {
-    size_t struct_size = structure->struct_info.num_fields == 0 ? 0 : pawscript_sizeof(structure);
+    size_t struct_size = 0;
+    for (size_t i = 0; i < structure->struct_info.num_fields; i++) {
+        size_t field = pawscript_sizeof(structure->struct_info.fields[i]) + structure->struct_info.field_offsets[i];
+        if (struct_size < field) struct_size = field;
+    }
     size_t alignment = pawscript_alignof(field);
     if (struct_size % alignment == 0) return struct_size;
     return struct_size + (alignment - struct_size % alignment);
@@ -1663,7 +1673,7 @@ static Type* pawscript_parse_type(PawScriptContext* context, Token** tokens, siz
             type = pawscript_find_type(context, token->value.string);
             if (!type) {
                 if (is_const) return ERROR("Undefined type '%s'", token->value.string);
-                else if (pawscript_find_variable(context, token->value.string)) return FAILED;
+                else if (pawscript_find_variable(context, token->value.string, NULL)) return FAILED;
                 else return ERROR("Undefined identifier '%s'", token->value.string);
             }
             type = pawscript_copy_type(type);
@@ -2849,13 +2859,19 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
         token = NEXT;
     }
     else if (token->type == TOKEN_IDENTIFIER) {
-        Variable* temp = pawscript_find_variable(context, token->value.string);
+        Variable* temp = pawscript_find_variable(context, token->value.string, NULL);
         if (!temp) return ERROR("Undefined variable '%s'", token->value.string);
         variable = pawscript_create_variable(context, temp->type, temp->address);
         token = NEXT;
     }
+    else if (token->type == TOKEN_this) {
+        Variable* this = pawscript_find_variable(context, "this", NULL);
+        if (!this) return ERROR("Undefined variable 'this'");
+        variable = pawscript_create_variable(context, this->type, this->address);
+        token = NEXT;
+    }
     else if (token->type == TOKEN_TRIPLE_DOT) {
-        Variable* variable = pawscript_find_variable(context, "...");
+        Variable* variable = pawscript_find_variable(context, "...", NULL);
         if (!variable) return ERROR("Function doesn't take any variadic arguments");
         token = NEXT;
         if (token->type != TOKEN_BRACKET_OPEN) return ERROR("Expected '['");
@@ -2913,27 +2929,22 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
         if (token->type != TOKEN_PARENTHESIS_OPEN) return ERROR("Expected '('");
         token = NEXT;
         size_t size = 0;
-        if (token->type == TOKEN_TRIPLE_DOT) {
-            Variable* variable = pawscript_find_variable(context, "...");
-            if (!variable) return ERROR("Function doesn't take any variadic arguments");
-            size = ((PawScriptVarargs*)variable->address)->count;
-            token = NEXT;
-        }
-        else {
-            Type* type = pawscript_parse_type(context, tokens, num_tokens, i);
-            if (pawscript_any_errors(context)) return FAILED;
-            if (!type) {
-                if (token->type != TOKEN_IDENTIFIER) return ERROR("Expected type or variable");
-                type = pawscript_copy_type(pawscript_find_variable(context, token->value.string)->type);
-                token = NEXT;
+        Type* type = pawscript_parse_type(context, tokens, num_tokens, i);
+        if (!type) {
+            if (token->type == TOKEN_IDENTIFIER) {
+                Variable* variable = pawscript_evaluate_expression(context, tokens, num_tokens, i, true);
+                if (!variable) return FAILED;
+                type = pawscript_copy_type(variable->type);
+                pawscript_destroy_variable(context, variable);
             }
-            size = pawscript_sizeof(type);
-            pawscript_destroy_type(type);
+            else return ERROR("Expected expression or type");
         }
+        size = pawscript_sizeof(type);
+        pawscript_destroy_type(type);
         token = CURR;
         if (token->type != TOKEN_PARENTHESIS_CLOSE) return ERROR("Expected ')'");
         token = NEXT;
-        Type* type = pawscript_create_type(TYPE_64BIT);
+        type = pawscript_create_type(TYPE_64BIT);
         type->is_unsigned = true;
         variable = pawscript_create_variable(context, type, NULL);
         *(uint64_t*)variable->address = size;
@@ -2985,6 +2996,95 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
         *(uint64_t*)variable->address = offset;
         pawscript_destroy_type(type);
         token = NEXT;
+    }
+    else if (token->type == TOKEN_scopeof) {
+        token = NEXT;
+        if (token->type != TOKEN_PARENTHESIS_OPEN) return ERROR("Expected '('");
+        token = NEXT;
+        PawScriptScope* scope = NULL;
+        if (token->type == TOKEN_this) scope = context->scope;
+        else if (token->type == TOKEN_IDENTIFIER) {
+            Variable* var = pawscript_find_variable(context, token->value.string, &scope);
+            if (!var) return ERROR("Undefined variable '%s'", token->value.string);
+        }
+        else return ERROR("Expected identifier or 'this'");
+        int scope_id = 0;
+        while (scope && scope->parent) {
+            scope_id++;
+            scope = scope->parent;
+        }
+        token = NEXT;
+        if (token->type != TOKEN_PARENTHESIS_CLOSE) return ERROR("Expected ')'");
+        token = NEXT;
+        Type* type = pawscript_create_type(TYPE_32BIT);
+        variable = pawscript_create_variable(context, type, NULL);
+        pawscript_destroy_type(type);
+        *(int*)variable->address = scope_id;
+    }
+    else if (token->type == TOKEN_infoof) {
+        token = NEXT;
+        if (token->type != TOKEN_PARENTHESIS_OPEN) return ERROR("Expected '('");
+        token = NEXT;
+        struct {
+            void* pointer;
+            uint64_t bytes;
+            uint64_t length;
+            int32_t scope;
+            bool is_valid;
+        } alloc_info;
+        memset(&alloc_info, 0, sizeof(alloc_info));
+        Variable* var = pawscript_evaluate_expression(context, tokens, num_tokens, i, true);
+        if (!var) return FAILED;
+        if (var->type->kind != TYPE_POINTER && var->type->kind != TYPE_FUNCTION) {
+            pawscript_destroy_variable(context, var);
+            return ERROR("Expression must return a pointer");
+        }
+        PawScriptAllocation* alloc = pawscript_find_allocation(context, *(void**)var->address, 1);
+        if (alloc) {
+            PawScriptScope* scope = pawscript_find_allocation_scope(context, *(void**)var->address);
+            alloc_info.is_valid = true;
+            alloc_info.pointer = alloc->ptr;
+            alloc_info.bytes = alloc->size;
+            alloc_info.length = alloc->size / pawscript_sizeof(var->type->pointer_info.base);
+            while (scope->parent) {
+                alloc_info.scope++;
+                scope = scope->parent;
+            }
+        }
+        pawscript_destroy_variable(context, var);
+        token = CURR;
+        if (token->type != TOKEN_PARENTHESIS_CLOSE) return ERROR("Expected ')'");
+        token = NEXT;
+        Type* type = pawscript_create_type(TYPE_POINTER);
+        Type* info = pawscript_create_type(TYPE_STRUCT);
+        Type* pointer_type = pawscript_create_type(TYPE_POINTER);
+        Type* void_type = pawscript_create_type(TYPE_VOID);
+        Type* bytes_type = pawscript_create_type(TYPE_64BIT);
+        Type* length_type = pawscript_create_type(TYPE_64BIT);
+        Type* scope_type = pawscript_create_type(TYPE_32BIT);
+        Type* is_valid_type = pawscript_create_type(TYPE_8BIT);
+        pointer_type->pointer_info.base = void_type;
+        bytes_type->is_unsigned = true;
+        length_type->is_unsigned = true;
+        is_valid_type->is_unsigned = true;
+        pointer_type->name = strdup("pointer");
+        bytes_type->name = strdup("bytes");
+        length_type->name = strdup("length");
+        scope_type->name = strdup("scope");
+        is_valid_type->name = strdup("is_valid");
+        info->struct_info.num_fields = 5;
+        info->struct_info.fields = malloc(sizeof(void*) * info->struct_info.num_fields);
+        info->struct_info.field_offsets = malloc(sizeof(void*) * info->struct_info.num_fields);
+        info->struct_info.fields[0] = pointer_type;  info->struct_info.field_offsets[0] = 0;
+        info->struct_info.fields[1] = bytes_type;    info->struct_info.field_offsets[1] = 8;
+        info->struct_info.fields[2] = length_type;   info->struct_info.field_offsets[2] = 16;
+        info->struct_info.fields[3] = scope_type;    info->struct_info.field_offsets[3] = 24;
+        info->struct_info.fields[4] = is_valid_type; info->struct_info.field_offsets[4] = 28;
+        type->pointer_info.base = info;
+        variable = pawscript_create_variable(context, type, NULL);
+        *(void**)variable->address = pawscript_allocate(context->scope, sizeof(alloc_info), false, false);
+        memcpy(*(void**)variable->address, &alloc_info, sizeof(alloc_info));
+        pawscript_destroy_type(type);
     }
     else if (token->type == TOKEN_new) {
 #undef FAILED
@@ -3111,8 +3211,10 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
     else if (token->type == TOKEN_promote) {
         token = NEXT;
         size_t num_scopes = 1;
+        bool global = false;
         if (token->type == TOKEN_global) {
             num_scopes = -1;
+            global = true;
             token = NEXT;
         }
         else if (token->type == TOKEN_INTEGER) {
@@ -3129,7 +3231,40 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
         }
         void* value = *(void**)ptrvar->address;
         PawScriptScope* target = pawscript_find_allocation_scope(context, value);
-        while (num_scopes && target->parent) {
+        pawscript_destroy_variable(context, ptrvar);
+        token = CURR;
+        if (token->type != TOKEN_PARENTHESIS_CLOSE) return ERROR("Expected ')'");
+        token = NEXT;
+        if (token->type == TOKEN_ARROW) {
+            if (global) return ERROR("Cannot mix 'global' and '->'");
+            token = NEXT;
+            if (token->type != TOKEN_BRACKET_OPEN) return ERROR("Expected '['");
+            token = NEXT;
+            int64_t scope_id;
+            Variable* scopevar = pawscript_evaluate_expression(context, tokens, num_tokens, i, true);
+            if (!scopevar) return FAILED;
+            if (!pawscript_get_integer(scopevar, (uint64_t*)&scope_id)) {
+                pawscript_destroy_variable(context, scopevar);
+                return ERROR("Expression must return an integer");
+            }
+            pawscript_destroy_variable(context, scopevar);
+            token = CURR;
+            if (token->type != TOKEN_BRACKET_CLOSE) return ERROR("Expected ']'");
+            token = NEXT;
+            int num_scopes = 0;
+            target = context->scope;
+            while (target->parent) {
+                target = target->parent;
+                num_scopes++;
+            }
+            if (scope_id > num_scopes) target = context->scope;
+            else if (scope_id >= 0) {
+                int counter = num_scopes - scope_id;
+                target = context->scope;
+                while (counter--) target = target->parent;
+            }
+        }
+        else while (num_scopes && target->parent) {
             if (target->type == SCOPE_FUNCTION) {
                 while (target->parent) target = target->parent;
                 break;
@@ -3138,10 +3273,6 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
             num_scopes--;
         }
         if (target) pawscript_move_allocation(context, target, value);
-        pawscript_destroy_variable(context, ptrvar);
-        token = CURR;
-        if (token->type != TOKEN_PARENTHESIS_CLOSE) return ERROR("Expected ')'");
-        token = NEXT;
 
         Type* type = pawscript_create_type(TYPE_POINTER);
         type->pointer_info.base = pawscript_create_type(TYPE_VOID);
@@ -3266,7 +3397,7 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
                             pawscript_destroy_call(call);
                             return ERROR("Variadic argument forward not allowed at this position");
                         }
-                        Variable* var = pawscript_find_variable(context, "...");
+                        Variable* var = pawscript_find_variable(context, "...", NULL);
                         if (!var) {
                             pawscript_destroy_call(call);
                             return ERROR("Function doesn't take any variadic arguments");
@@ -3387,7 +3518,8 @@ static size_t pawscript_scan_operand(PawScriptContext* context, Token** tokens, 
         token->type == TOKEN_IDENTIFIER ||
         token->type == TOKEN_false ||
         token->type == TOKEN_true ||
-        token->type == TOKEN_null
+        token->type == TOKEN_null ||
+        token->type == TOKEN_this
     ) token = NEXT;
     else if (token->type == TOKEN_PARENTHESIS_OPEN) {
         SCAN(TOKEN_PARENTHESIS_CLOSE)
@@ -3407,6 +3539,8 @@ static size_t pawscript_scan_operand(PawScriptContext* context, Token** tokens, 
         token = NEXT;
         if (token->type == TOKEN_INTEGER || token->type == TOKEN_global) token = NEXT;
         if (token->type == TOKEN_PARENTHESIS_OPEN) SCAN(TOKEN_PARENTHESIS_CLOSE)
+        if (token->type == TOKEN_ARROW) token = NEXT;
+        if (token->type == TOKEN_BRACKET_OPEN) SCAN(TOKEN_BRACKET_CLOSE)
     }
     else if (token->type == TOKEN_delete || token->type == TOKEN_adopt) {
         token = NEXT;
@@ -3417,7 +3551,7 @@ static size_t pawscript_scan_operand(PawScriptContext* context, Token** tokens, 
         if (token->type == TOKEN_LESS_THAN)  SCAN(TOKEN_GREATER_THAN)
         if (token->type == TOKEN_BRACE_OPEN) SCAN(TOKEN_BRACE_CLOSE)
     }
-    else if (token->type == TOKEN_sizeof) {
+    else if (token->type == TOKEN_sizeof || token->type == TOKEN_scopeof || token->type == TOKEN_infoof) {
         token = NEXT;
         if (token->type == TOKEN_PARENTHESIS_OPEN) SCAN(TOKEN_PARENTHESIS_CLOSE)
     }
@@ -3642,7 +3776,7 @@ static bool pawscript_evaluate_statement(PawScriptContext* context, Token** toke
     }
     else if (is_extern) return ERROR("Expected type");
     if (token->type == TOKEN_IDENTIFIER) {
-        Variable* var = pawscript_find_variable(context, token->value.string);
+        Variable* var = pawscript_find_variable(context, token->value.string, NULL);
         token = NEXT;
         if (token->type == TOKEN_BRACE_OPEN) {
             if (var->type->kind != TYPE_FUNCTION) return ERROR("Cannot attach code to a non-function type");
@@ -3971,14 +4105,14 @@ void pawscript_register_symbol(PawScriptContext* context, void* symbol) {
 }
 
 bool pawscript_get(PawScriptContext* context, const char* name, void* out) {
-    Variable* variable = pawscript_find_variable(context, name);
+    Variable* variable = pawscript_find_variable(context, name, NULL);
     if (!variable) return false;
     memcpy(out, variable->address, pawscript_sizeof(variable->type));
     return true;
 }
 
 bool pawscript_set(PawScriptContext* context, const char* name, void* in) {
-    Variable* variable = pawscript_find_variable(context, name);
+    Variable* variable = pawscript_find_variable(context, name, NULL);
     if (!variable) return false;
     if (variable->type->is_const) return false;
     if (variable->type->kind == TYPE_FUNCTION) memcpy(variable->address, &in, 8);
@@ -3988,7 +4122,7 @@ bool pawscript_set(PawScriptContext* context, const char* name, void* in) {
 }
 
 Type* pawscript_get_type(PawScriptContext* context, const char* name) {
-    Variable* variable = pawscript_find_variable(context, name);
+    Variable* variable = pawscript_find_variable(context, name, NULL);
     if (!variable) return NULL;
     return pawscript_make_original(pawscript_copy_type(variable->type));
 }

@@ -311,7 +311,7 @@ Expressions are essentially a set of operands and operators. Operands can be any
 
 All operators are pretty much the same as in C, down to operator precedence. The differences is a lack of a `->` operator, which in C is used to traverse struct that are pointed to by pointers. In PawScript, all structs are struct pointers, as mentioned before, so the `.` operator is used for struct pointers. Accessing a non-pointer struct via the `.` operator will automatically convert it to a pointer pointing to that struct.
 
-The `*of` built-in functions are reworked. `sizeof` only accepts types and variables, not full expressions. The syntax of `offsetof` was changed to `offsetof<struct_name>.field`. `alignof` and `typeof` are missing as they were deemed unnecessary.
+The `*of` built-in functions are reworked. `sizeof` accepts full expressions and types, like in C. The syntax of `offsetof` was changed to `offsetof<struct_name>.field`. `alignof` and `typeof` are missing as they were deemed unnecessary.
 
 Another difference is the ternary operator. Instead of `?:` it uses this syntax: `if condition -> [when_true; when_false]`.
 
@@ -457,7 +457,25 @@ You can also use the `global` keyword instead to guarantee a promotion to the gl
 ```
 promote global(value);
 ```
+Another option is using a scope ID. The way you get a scope ID is using `scopeof(variable)`, but if you use the `this` keyword instead of a variable,
+it returns the ID of the current scope. It's guaranteed that `scopeof(this) - 1` is one scope above. This also works across functions:
+```
+void*() create_alloc {
+  void* alloc = new scoped(64);
+  return promote(alloc) -> [scopeof(this) - 1];
+}
+
+void() use_alloc {
+  void* alloc = create_alloc();
+  // ...
+  return; // alloc gets freed here
+}
+```
+Keep in mind that `scopeof(alloc)` returns the scope of the **variable**, not the **allocation**.
+
 The `adopt` keyword lets the current scope take ownership of an allocation. I'm going to admit, I could've chosen `demote` but `adopt` just sounds funnier.
+
+It's essentially syntax sugar for `promote(x) -> [scopeof(this)]`
 ```
 void*(s8* message) log_error {
   printf("! ERROR: %s\n", message);
@@ -480,6 +498,20 @@ if another_error_happened -> return log_error(error); // my_allocation would lea
 void* my_allocation = adopt(allocate()); // the current scope now "adopted" the allocation from the global scope, it now owns it
 if another_error_happened -> return log_error(error); // my_allocation would get properly disposed
 ```
+
+In order to get information about the allocation itself, like the size, scope or array length,
+you can use `infoof`, which returns a struct containing a bunch of information about the allocation itself.
+The struct looks like this:
+```
+struct AllocInfo {
+  void* pointer; // pointer to the first byte of the allocation
+  u64 bytes;     // allocation size in bytes
+  u64 length;    // allocation size in bytes / base type size in bytes
+  s32 scope;     // allocation scope
+  bool is_valid; // true if the pointer corresponds to an allocation, false if not
+}
+```
+This struct definition is stored in `stdc/allow.paw` if you want to include it in your scripts.
 
 ### `extern`
 
