@@ -3091,7 +3091,7 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
 #define FAILED ({ if (target_type) pawscript_destroy_type(target_type); for (size_t j = 0; j < num_variables; j++) pawscript_destroy_variable(context, variables[j]); free(variables); NULL; })
         bool scoped = false;
         Type* target_type = NULL;
-        uint64_t size = 0;
+        uint64_t size = 0, array_size = 0;
         Function* function = NULL;
         size_t num_variables = 0;
         Variable** variables = NULL;
@@ -3144,15 +3144,13 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
                     unset = false;
                     Variable* sizevar = pawscript_evaluate_expression(context, tokens, num_tokens, i, true);
                     if (!sizevar) return FAILED;
-                    uint64_t multiplier;
-                    if (!pawscript_get_integer(sizevar, &multiplier)) {
+                    if (!pawscript_get_integer(sizevar, &array_size)) {
                         pawscript_destroy_variable(context, sizevar);
                         return ERROR("Expression must return an integer");
                     }
                     pawscript_destroy_variable(context, sizevar);
                     token = CURR;
                     if (token->type != TOKEN_PARENTHESIS_CLOSE) return ERROR("Expected ')'");
-                    size *= multiplier;
                 }
                 token = NEXT;
                 if (token->type == TOKEN_BRACE_OPEN) {
@@ -3164,8 +3162,21 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
                         num_variables++;
                         variables = realloc(variables, sizeof(Variable*) * num_variables);
                         variables[num_variables - 1] = entry;
+                        token = CURR;
+                        if (token->type == TOKEN_COMMA) {
+                            token = NEXT;
+                            continue;
+                        }
+                        else if (token->type == TOKEN_BRACE_CLOSE) {
+                            token = NEXT;
+                            break;
+                        }
+                        else return ERROR("Expected ',' or '}'");
                     }
+                    if (unset) array_size = num_variables;
                 }
+                else if (unset) return ERROR("Expected '{'");
+                size *= array_size;
             }
         }
         else return ERROR("Expected '(' or '<'");
@@ -3175,6 +3186,14 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
         void* alloc = function ? function : pawscript_allocate(scope, size, false, false);
         if (function) pawscript_move_allocation(context, scope, function);
         else {
+            size_t base_size = pawscript_sizeof(target_type);
+            for (size_t j = 0; j < num_variables && j < array_size; j++) {
+                Variable* casted = pawscript_cast(context, target_type, variables[j], false);
+                memcpy((char*)alloc + base_size * j, casted->address, base_size);
+                pawscript_destroy_variable(context, variables[j]);
+                pawscript_destroy_variable(context, casted);
+            }
+            free(variables);
             Type* ptr = pawscript_create_type(TYPE_POINTER);
             ptr->pointer_info.base = target_type;
             target_type = ptr;
