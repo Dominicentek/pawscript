@@ -369,7 +369,7 @@ s32_but_different value;
 
 ### `new`
 
-PawScript, since it's designed around a systems-like feel, has manual memory management. In order to make that a bit more bearable, the `new` keyword allows for all kinds of allocations, most notably **scoped allocations**. These allocations automatically get free'd once out of scope.
+PawScript, since it's designed around a systems-like feel, has manual memory management. In order to make that a bit more bearable, the `new` keyword allows for all kinds of allocations, most notably **scoped allocations**. These allocations automatically get freed once out of scope.
 
 By default it allocates to the global scope:
 ```
@@ -453,7 +453,7 @@ promote 2(value);
 ```
 This **has** to be an integer literal though, you can't use expressions.
 
-You can also use the `global` keyword instead to guarantee a promotion to the global scope, which pretty much makes the allocation permanent unless free'd:
+You can also use the `global` keyword instead to guarantee a promotion to the global scope, which pretty much makes the allocation permanent unless freed:
 ```
 promote global(value);
 ```
