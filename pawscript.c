@@ -3489,20 +3489,23 @@ static Variable* pawscript_evaluate_tokens(PawScriptContext* context, Token** to
 
 static bool pawscript_scan_until(PawScriptContext* context, Token** tokens, size_t num_tokens, size_t* i, TokenKind type) {
 #define FAILED false
+#define MATCH(str) !strchr(str, POP(stack))
     Token* token = NEXT;
     char* stack = NULL;
     int stack_len = 0;
+    bool range_flag = false;
     while (*i < num_tokens) {
         if (stack_len == 0 && token->type == type) {
             token = NEXT;
             return true;
         }
-        if (token->type == TOKEN_PARENTHESIS_OPEN) PUSH(stack, '(');
-        if (token->type == TOKEN_BRACKET_OPEN)     PUSH(stack, '[');
+        if (token->type == TOKEN_PARENTHESIS_OPEN) PUSH(stack, range_flag ? 'r' : '(');
+        if (token->type == TOKEN_BRACKET_OPEN)     PUSH(stack, range_flag ? 'r' : '[');
         if (token->type == TOKEN_BRACE_OPEN)       PUSH(stack, '{');
-        if (token->type == TOKEN_PARENTHESIS_CLOSE && (stack_len == 0 || POP(stack) != '(')) return ERROR("Unexpected ')'");
-        if (token->type == TOKEN_BRACKET_CLOSE     && (stack_len == 0 || POP(stack) != '[')) return ERROR("Unexpected ']'");
-        if (token->type == TOKEN_BRACE_CLOSE       && (stack_len == 0 || POP(stack) != '{')) return ERROR("Unexpected '}'");
+        if (token->type == TOKEN_PARENTHESIS_CLOSE && (stack_len == 0 || MATCH("(r"))) return ERROR("Unexpected ')'");
+        if (token->type == TOKEN_BRACKET_CLOSE     && (stack_len == 0 || MATCH("[r"))) return ERROR("Unexpected ']'");
+        if (token->type == TOKEN_BRACE_CLOSE       && (stack_len == 0 || MATCH("{" ))) return ERROR("Unexpected '}'");
+        range_flag = token->type == TOKEN_in;
         token = NEXT;
     }
     return ERROR("Unexpected end of expression");
