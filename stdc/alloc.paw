@@ -1,0 +1,7 @@
+struct AllocInfo {
+    void* pointer;
+    u64 bytes;
+    u64 length;
+    s32 scope;
+    bool is_valid;
+};
