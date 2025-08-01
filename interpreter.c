@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #define BUFFER_SIZE 8192
 
@@ -82,7 +83,7 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "Expected file\n");
                 return 1;
             }
-            if (strcmp(argv[i], "-")) {
+            if (strcmp(argv[i], "-") == 0) {
                 char* buf = create_buffer();
                 int c, ptr = 0;
                 while ((c = getchar()) != EOF) {
@@ -105,6 +106,10 @@ int main(int argc, char** argv) {
     char* buf = create_buffer();
     int ptr = 0;
     while (interactive) {
+        if (!isatty(STDIN_FILENO)) {
+            fprintf(stderr, "stdin is not an interactive terminal. Skipping interactive shell.\n");
+            return 1;
+        }
         printf("%c ", ptr == 0 ? '>' : '+');
         buffer_read_line(&buf, &ptr);
         if (can_exec(buf)) {
