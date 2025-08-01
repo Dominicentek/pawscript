@@ -1222,29 +1222,31 @@ static Token** pawscript_lex_internal(PawScriptContext* context, const char* cod
     }
     Token* token = pawscript_append_token(&tokens, num_tokens, filename, state.row, state.col);
     token->type = TOKEN_END_OF_FILE;
-    (*num_tokens)--;
     return tokens;
 }
 
 static Token** pawscript_remove_comments(PawScriptContext* context, char* filename, Token** tokens, size_t* num_tokens) {
     *num_tokens = 0;
     Token** processed = NULL;
-    size_t i = -1;
+    size_t i = 0;
     int comment_line = 0;
     Token* multiline_comment = NULL;
-    while (tokens[++i]->type != TOKEN_END_OF_FILE) {
-        if (comment_line == tokens[i]->row) continue;
-        if (multiline_comment) {
-            if (tokens[i]->type == TOKEN_COMMENT_END) multiline_comment = NULL;
-            continue;
+    do {
+        if (tokens[i]->type != TOKEN_END_OF_FILE) {
+            if (comment_line == tokens[i]->row) continue;
+            if (multiline_comment) {
+                if (tokens[i]->type == TOKEN_COMMENT_END) multiline_comment = NULL;
+                continue;
+            }
+            if (tokens[i]->type == TOKEN_COMMENT) comment_line = tokens[i]->row;
+            if (tokens[i]->type == TOKEN_COMMENT_START) multiline_comment = tokens[i];
+            if (tokens[i]->type == TOKEN_COMMENT || tokens[i]->type == TOKEN_COMMENT_START) continue;
         }
-        if (tokens[i]->type == TOKEN_COMMENT) comment_line = tokens[i]->row;
-        if (tokens[i]->type == TOKEN_COMMENT_START) multiline_comment = tokens[i];
-        if (tokens[i]->type == TOKEN_COMMENT || tokens[i]->type == TOKEN_COMMENT_START) continue;
         (*num_tokens)++;
         processed = realloc(processed, sizeof(Token*) * *num_tokens);
         processed[*num_tokens - 1] = tokens[i];
     }
+    while (tokens[i++]->type != TOKEN_END_OF_FILE);
     free(tokens);
     if (multiline_comment) pawscript_push_error(context, filename, multiline_comment->row, multiline_comment->col, "Unterminated multiline comment");
     return processed;
@@ -1259,7 +1261,9 @@ static Token** pawscript_lex(PawScriptContext* context, const char* code, char* 
     Token** tokens = pawscript_lex_internal(context, with_newline, filename, num_tokens);
     free(with_newline);
     if (!tokens) return NULL;
-    return pawscript_remove_comments(context, filename, tokens, num_tokens);
+    tokens = pawscript_remove_comments(context, filename, tokens, num_tokens);
+    (*num_tokens)--;
+    return tokens;
 }
 
 static void pawscript_add_allocation(PawScriptScope* scope, void* ptr, size_t size, bool strict) {
@@ -1520,7 +1524,7 @@ static bool pawscript_evaluate_statement(PawScriptContext* context, Token** toke
 static bool pawscript_evaluate(PawScriptContext* context, Token** tokens, size_t num_tokens);
 static bool pawscript_scan_until(PawScriptContext* context, Token** tokens, size_t num_tokens, size_t* i, TokenKind type);
 
-bool pawscript_run_file_inner(PawScriptContext* context, const char* filename, Token* token) {
+bool pawscript_run_file(PawScriptContext* context, const char* filename, Token* token) {
     FILE* f = fopen(filename, "r");
     if (!f) {
         pawscript_push_error(context,
@@ -1566,7 +1570,7 @@ static void pawscript_set_state(PawScriptContext* context, PawScriptState state,
 static Type* pawscript_parse_type(PawScriptContext* context, Token** tokens, size_t num_tokens, size_t* i) {
 #define FAILED ({ if (type) pawscript_destroy_type(type); NULL; })
 #define ERROR(msg, ...) ({ pawscript_push_error(context, token->filename, token->row, token->col, msg " (interpreter line %d)", __VA_ARGS__ __VA_OPT__(,) __LINE__); FAILED; })
-#define NEXT ({ (*i)++; token = CURR; if (*i > num_tokens) return ERROR("Unexpected end of expression"); CURR; })
+#define NEXT ({ (*i)++; token = CURR; if (*i > num_tokens) { (*i)--; token = CURR; return ERROR("Unexpected end of expression"); } CURR; })
 #define CURR tokens[*i]
 #define CREATE_TYPE(type_kind, unsigned) type = pawscript_create_type(type_kind); type->is_unsigned = unsigned; type->is_const = is_const; token = NEXT; break;
     Token* token = tokens[*i];
@@ -4025,7 +4029,7 @@ static bool pawscript_evaluate_statement(PawScriptContext* context, Token** toke
         PawScriptScope* global = scope;
         while (global->parent) global = global->parent;
         context->scope = global;
-        bool result = pawscript_run_file_inner(context, filename, token);
+        bool result = pawscript_run_file(context, filename, token);
         free(filename);
         context->scope = scope;
         token = NEXT;
