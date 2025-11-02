@@ -9,6 +9,24 @@
 typedef struct PawScriptContext PawScriptContext;
 typedef struct PawScriptError PawScriptError;
 
+typedef enum {
+    PawScriptVarargs_End,
+    PawScriptVarargs_Integer,
+    PawScriptVarargs_FloatingPoint,
+} PawScriptVarargsType;
+
+typedef struct {
+    PawScriptVarargsType type;
+    union {
+        uint64_t integer;
+        double floating_point;
+    };
+} PawScriptVarargs;
+
+#define PAWSCRIPT_VARARGS(...) (PawScriptVarargs[]){ __VA_ARGS__ __VA_OPT__(,) (PawScriptVarargs){ .type = PawScriptVarargs_End }}
+#define PAWSCRIPT_VARARGS_INT(x) (PawScriptVarargs){ .type = PawScriptVarargs_Integer, .integer = (x) }
+#define PAWSCRIPT_VARARGS_FLOAT(x) (PawScriptVarargs){ .type = PawScriptVarargs_FloatingPoint, .floating_point = (x) }
+
 #define PAWSCRIPT_RESULT "@RESULT@"
 
 #ifdef __cplusplus

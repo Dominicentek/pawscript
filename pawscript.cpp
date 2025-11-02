@@ -437,16 +437,28 @@ struct FFI {
     uint64_t int_value = 0;
     double float_value = 0;
 
+    bool varargs = false;
+
     void push_int(uint64_t value) {
         if (num_ints >= NUM_INT_REGS) stack.add(value);
         else int_regs[num_ints++] = value;
     }
     void push_f32(float value) {
+        if (varargs) {
+            push_f64(value);
+            return;
+        }
         double f64 = 0;
         memcpy(&f64, &value, sizeof(float));
         push_f64(f64);
     }
     void push_f64(double value) {
+#ifdef _WIN32
+        if (varargs) {
+            push_int64(*(uint64_t*)&value);
+            return;
+        }
+#endif
         if (num_floats >= NUM_FLT_REGS) stack.add(*(uint64_t*)&value);
         else flt_regs[num_floats++] = value;
     }
@@ -905,6 +917,24 @@ struct Variable {
             default: return type->to_string();
         }
     }
+};
+
+struct VarargsInfo {
+    Variable* array;
+    int num_args;
+    VarargsInfo(Variable* array, int num_args): array(array), num_args(num_args) {}
+};
+
+struct VarargsData {
+    enum {
+        End,
+        Integer,
+        FloatingPoint,
+    } type;
+    union {
+        uint64_t integer;
+        double floating_point;
+    };
 };
 
 struct TypeCache: Map<uint64_t, Type*> {
@@ -2091,13 +2121,10 @@ static void parse_operand(Context* context, ByteWriter* buf, TokenQueue* tokens)
         if (!tokens->expect(TOKEN_PARENTHESIS_CLOSE)) throw Error::parser(tokens->pop(), "Expected ')'");
     }
     else if ((token = tokens->expect(TOKEN_TRIPLE_DOT))) {
-        buf->write(AST_VARIABLE)->write<int32_t>(token->row)->write<int32_t>(token->col);
-        buf->write("...");
-        buf->write(AST_ARRAY)->write<int32_t>(token->row)->write<int32_t>(token->col);
+        buf->write(AST_VARARGS)->write<int32_t>(token->row)->write<int32_t>(token->col);
         if (!tokens->expect(TOKEN_BRACKET_OPEN)) throw Error::parser(tokens->pop(), "Expected '['");
         parse_expression(context, buf, tokens);
         if (!tokens->expect(TOKEN_BRACKET_CLOSE)) throw Error::parser(tokens->pop(), "Expected ']'");
-        buf->write(AST_END);
     }
     else if ((token = tokens->expect(TOKEN_sizeof)) || (token = tokens->expect(TOKEN_typeof)) || (token = tokens->expect(TOKEN_delete))) {
         if (token->type == TOKEN_typeof) buf->write(AST_TYPEOF);
@@ -2105,7 +2132,11 @@ static void parse_operand(Context* context, ByteWriter* buf, TokenQueue* tokens)
         else buf->write(AST_SIZEOF);
         buf->write<int32_t>(token->row)->write<int32_t>(token->col);
         if (!tokens->expect(TOKEN_PARENTHESIS_OPEN)) throw Error::parser(tokens->pop(), "Expected '('");
-        parse_expression(context, buf, tokens);
+        if (tokens->expect(TOKEN_TRIPLE_DOT)) buf->write(true);
+        else {
+            buf->write(false);
+            parse_expression(context, buf, tokens);
+        }
         if (!tokens->expect(TOKEN_PARENTHESIS_CLOSE)) throw Error::parser(tokens->pop(), "Expected ')'");
     }
     else if ((token = tokens->expect(TOKEN_scopeof))) {
@@ -2366,6 +2397,7 @@ static void parse_operand(Context* context, ByteWriter* buf, TokenQueue* tokens)
             if (!tokens->expect(TOKEN_PARENTHESIS_CLOSE)) while (true) {
                 if ((token = tokens->expect(TOKEN_TRIPLE_DOT))) {
                     buf->write(AST_TYPE)->write<int32_t>(token->row)->write<int32_t>(token->col)->write(false)->write(TypeKind_Varargs)->write(false);
+                    buf->write(AST_END)->write(false);
                     if (tokens->expect(TOKEN_PARENTHESIS_CLOSE)) break;
                     throw Error::parser(tokens->pop(), "Expected ')'");
                     break;
@@ -2819,16 +2851,21 @@ static void execute_params(Context* context, ByteReader* reader, List<Type::Para
 
 static Variable execute_function(Context* context, Variable* function, List<Variable>* args) {
     if (function->type->kind != TypeKind_Function) throw Error::runtime(context, "Attempt to call a non-function value");
-    if (function->type->function_info.num_params != args->size) throw Error::runtime(context, String::new_format("Non-matching number of arguments (expected %d, got %d)", function->type->function_info.num_params, args->size));
-    for (int i = 0; i < function->type->function_info.num_params; i++) {
-        args->get(i) = cast(context, function->type->function_info.params[i].type, args->get(i), false, true);
+    Type::Param* params = function->type->function_info.params;
+    size_t num_params = function->type->function_info.num_params;
+    int varargs_index = num_params > 0 && params[num_params - 1].type->kind == TypeKind_Varargs ? num_params - 1 : -1;
+    if (varargs_index == -1 && num_params != args->size) throw Error::runtime(context, String::new_format("Non-matching number of arguments (expected %d, got %d)", num_params, args->size));
+    else if (args->size < varargs_index) throw Error::runtime(context, String::new_format("Non-matching number of arguments (expected >=%d, got %d)", varargs_index, args->size));
+    for (int i = 0; i < num_params; i++) {
+        if (params[i].type->kind == TypeKind_Varargs) break;
+        args->get(i) = cast(context, params[i].type, args->get(i), false, true);
     }
     if (function->as<Function*>() == NULL) throw Error::runtime(context, "Calling an unset function");
     if (function->as<Function*>()->is_native()) {
         if (function->type->lvalue_return) throw Error::runtime(context, "Cannot call a native assignable function");
         FFI ffi;
-        for (int i = 0; i < function->type->function_info.num_params; i++) {
-            Type* type = function->type->function_info.params->type;
+        for (int i = 0; i < args->size; i++) {
+            if (!ffi.varargs && params[i].type->kind == TypeKind_Varargs) ffi.varargs = true;
             if      (args->get(i).type->kind == TypeKind_Float32) ffi.push_f32(args->get(i).as<float>());
             else if (args->get(i).type->kind == TypeKind_Float64) ffi.push_f64(args->get(i).as<double>());
             else ffi.push_int(args->get(i).as<uint64_t>());
@@ -2850,8 +2887,9 @@ static Variable execute_function(Context* context, Variable* function, List<Vari
             if (func->capture_mode == CaptureMode_CopyPerCall)
                 context->store(func->variables->pairs[i].key, *func->variables->pairs[i].value);
         }
-        for (int i = 0; i < function->type->function_info.num_params; i++) {
-            char* name = function->type->function_info.params[i].name;
+        for (int i = 0; i < num_params; i++) {
+            if (params[i].type->kind == TypeKind_Varargs) break;
+            char* name = params[i].name;
             Variable var = context->store(name, args->get(i));
             if (!var.type) {
                 if (func->variables->has(name))
@@ -2864,6 +2902,12 @@ static Variable execute_function(Context* context, Variable* function, List<Vari
             const_this.as<void*>() = func->this_ptr;
             const_this.type = const_this.type->constant(context);
             context->store("this", const_this);
+        }
+        VarargsInfo* varargs_info = NULL;
+        if (varargs_index != -1) {
+            Variable varargs = Variable(context->type_cache->primitive(TypeKind_Varargs));
+            varargs.as<VarargsInfo*>() = new VarargsInfo(args->items + varargs_index, args->size - varargs_index);
+            context->store("...", varargs);
         }
         ByteReader reader(func->entry, func->length);
         execute_codeblock(context, &reader, false);
@@ -2884,6 +2928,7 @@ static Variable execute_function(Context* context, Variable* function, List<Vari
         else throw Error::runtime(context, String::new_format("'%s' outside of loop %d", context->state == State_Break ? "break" : "continue"));
         context->state = State_Running;
         context->pop_stack_frame();
+        delete varargs_info;
         return var;
     }
 }
@@ -2891,6 +2936,16 @@ static Variable execute_function(Context* context, Variable* function, List<Vari
 static uint64_t call_driver(Context* context, Type* type, Function* function, uint64_t* args) {
     List<Variable> variables;
     for (int i = 0; i < type->function_info.num_params; i++) {
+        if (type->function_info.params[i].type->kind == TypeKind_Varargs) {
+            VarargsData* data = (VarargsData*)(uintptr_t)args[i];
+            while (data->type != VarargsData::End) {
+                Variable var(context->type_cache->primitive(data->type == VarargsData::Integer ? TypeKind_Int64 : TypeKind_Float64));
+                var.as<uint64_t>() = data->integer;
+                variables.add(var);
+                data++;
+            }
+            break;
+        }
         Variable var(type->function_info.params[i].type);
         var.as<uint64_t>() = args[i];
         variables.add(var);
@@ -3497,6 +3552,17 @@ static Variable execute_expression_node(Context* context, ByteReader* reader, St
             if (!var.type) throw Error::runtime(context, String::new_format("Variable '%s' not found", name));
             return stack ? stack->push(var)->peek() : var;
         } break;
+        case AST_VARARGS: {
+            Variable var = context->load("...");
+            if (!var.type) throw Error::runtime(context, "No varargs available in current context");
+            VarargsInfo* info = var.as<VarargsInfo*>();
+            Variable index_var = execute_expression(context, reader);
+            if (!matches(&index_var, VarType_Integer)) throw Error::runtime(context, "Index must be an integer");
+            uint64_t index = index_var.as<uint64_t>();
+            if (index >= info->num_args) throw Error::runtime(context, "Vararg index out of bounds");
+            var = info->array[index];
+            return stack ? stack->push(var)->peek() : var;
+        } break;
         case AST_DEFER: {
             Variable var = Variable(context->type_cache->primitive(TypeKind_Type));
             var.as<Type*>() = context->type_cache->deferred(reader->read<char*>());
@@ -3507,11 +3573,13 @@ static Variable execute_expression_node(Context* context, ByteReader* reader, St
             return stack ? stack->push(var)->peek() : var;
         } break;
         case AST_SIZEOF: {
-            Variable var = execute_expression(context, reader);
+            bool varargs = reader->read<bool>();
+            Variable var = varargs ? context->load("...") : execute_expression(context, reader);
+            if (!var.type) throw Error::runtime(context, "No varargs available in current context");
             Type* type = matches(&var, VarType_Type) ? var.as<Type*>() : var.type;
-            var = Variable(context->type_cache->primitive(TypeKind_Int64)->unsign(context));
-            var.as<uint64_t>() = type->size;
-            return stack ? stack->push(var)->peek() : var;
+            Variable size = Variable(context->type_cache->primitive(TypeKind_Int64)->unsign(context));
+            size.as<uint64_t>() = varargs ? var.as<VarargsInfo*>()->num_args : type->size;
+            return stack ? stack->push(size)->peek() : size;
         } break;
         case AST_TYPEOF: {
             Variable var = execute_expression(context, reader);
