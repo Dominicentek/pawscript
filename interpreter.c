@@ -1,7 +1,9 @@
 #include "pawscript.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <unistd.h>
 
 #define BUFFER_SIZE 8192
@@ -31,13 +33,6 @@ void buffer_read_line(char** buffer, int* ptr) {
     (*ptr)--;
 }
 
-void report_errors(PawScriptContext* context) {
-    PawScriptError* error;
-    while (pawscript_error(context, &error)) {
-        fprintf(stderr, "(%s %d:%d) %s\n", error->file ? error->file : "<stdin>", error->row, error->col, error->msg);
-    }
-}
-
 bool can_exec(char* code) {
     int depth = 0;
     char string_char = 0;
@@ -64,7 +59,6 @@ int main(int argc, char** argv) {
     bool interactive = false;
     if (argc == 1) {
         printf("Paws - The PawScript interpreter\n");
-        printf("  by Dominicentek\n\n");
         printf("Usage:\n");
         printf("-f <file>   execute a file\n");
         printf("-f -        run from stdin\n");
@@ -89,13 +83,21 @@ int main(int argc, char** argv) {
                 while ((c = getchar()) != EOF) {
                     buffer_append(&buf, &ptr, c);
                 }
-                pawscript_run(context, buf);
-                report_errors(context);
+                PawScriptError* error;
+                if ((error = pawscript_run(context, buf))) pawscript_log_error(error, stderr);
+                else {
+                    printf("<stdin>: ");
+                    pawscript_print_variable(context, stdout, PAWSCRIPT_RESULT);
+                }
                 free(buf);
             }
             else {
-                pawscript_run_file(context, argv[i]);
-                report_errors(context);
+                PawScriptError* error;
+                if ((error = pawscript_run_file(context, argv[i]))) pawscript_log_error(error, stderr);
+                else {
+                    printf("%s: ", argv[i]);
+                    pawscript_print_variable(context, stdout, PAWSCRIPT_RESULT);
+                }
             }
         }
         else {
@@ -113,8 +115,9 @@ int main(int argc, char** argv) {
         printf("%c ", ptr == 0 ? '>' : '+');
         buffer_read_line(&buf, &ptr);
         if (can_exec(buf)) {
-            pawscript_run(context, buf);
-            report_errors(context);
+            PawScriptError* error;
+            if ((error = pawscript_run(context, buf))) pawscript_log_error(error, stderr);
+            else pawscript_print_variable(context, stdout, PAWSCRIPT_RESULT);
             ptr = 0;
         }
     }
