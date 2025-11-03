@@ -744,14 +744,23 @@ struct Type {
         alloc->free(this);
     }
     void build_struct_layout() {
-        this->size = this->alignment = 0;
+        this->size = 0; this->alignment = 1;
+        size_t prev_offset = 0;
         for (int i = 0; i < struct_info.num_fields; i++) {
             Type::Field* field = &struct_info.fields[i];
+            if (field->type->kind == TypeKind_Pointer) {
+                if (field->offset == -1) field->offset = prev_offset;
+                else if (field->offset & (1L << 63)) field->offset = prev_offset + (field->offset & (uint64_t)(1L << 63) - 1);
+                prev_offset = field->offset;
+                continue;
+            }
             size_t alignment = field->inlined ? field->type->alignment : field->type->value_size();
             if (field->offset == -1) {
                 if (this->size % alignment) field->offset = this->size + alignment - this->size % alignment;
                 else field->offset = this->size;
             }
+            else if (field->offset & (1L << 63)) field->offset = prev_offset + (field->offset & (uint64_t)(1L << 63) - 1);
+            prev_offset = field->offset;
             size_t size = (field->inlined ? field->type->size : field->type->value_size()) + field->offset;
             if (this->size < size) this->size = size;
             if (this->alignment < alignment) this->alignment = alignment;
@@ -1004,7 +1013,7 @@ struct TypeCache: Map<uint64_t, Type*> {
         }
         else {
             type = add(type->hash, alloc->copy<Type>(type));
-            if (type->kind == TypeKind_Pointer) type->pointer_info.base << type; 
+            if (type->kind == TypeKind_Pointer) type->pointer_info.base << type;
             if (type->kind == TypeKind_Struct) for (int i = 0; i < type->struct_info.num_fields; i++) type->struct_info.fields[i].type << type;
             if (type->kind == TypeKind_Function) for (int i = 0; i < type->function_info.num_params; i++) type->function_info.params[i].type << type;
             return type;
@@ -1087,8 +1096,9 @@ struct TypeCache: Map<uint64_t, Type*> {
         for (int i = 0; i < type->struct_info.num_fields; i++) {
             Type::Field* field = &type->struct_info.fields[i];
             if (!field->inlined) continue;
-            if (visited->find(field->type)) throw Error::runtime(context, String::new_format("Cannot resolve defers: Inline field '%s' recurses", field->name));
-            if (field->type->kind != TypeKind_Struct) throw Error::runtime(context, String::new_format("Inline field '%s' is not a struct type", field->name));
+            if (visited->find(field->type)) throw Error::runtime(context, String::new_format("Cannot resolve defers: Inline field '%s' recurses", field->name ? field->name : "<anonymous>"));
+            if (field->type->kind != TypeKind_Struct && field->type->kind != TypeKind_Pointer) throw Error::runtime(context, String::new_format("Inline field '%s' is not a struct or pointer type", field->name));
+            if (field->type->kind == TypeKind_Pointer && !field->name) throw Error::runtime(context, String::new_format("Inline field is a pointer but has no identifier", field->name));
             validate_type(context, field->type, visited);
         }
     }
@@ -1486,6 +1496,7 @@ Type* TypeCache::resolve_single_defer(Type* type, Context* context, Set<Type*>* 
     SYMBOL("!", EXCLAMATION_MARK) \
     SYMBOL("...", TRIPLE_DOT) \
     SYMBOL("@", AT) \
+    SYMBOL("+@", PLUS_AT) \
     SYMBOL("?~", QUESTION_MARK_TILDE) \
     SYMBOL("#", HASHTAG) \
     SYMBOL("$", DOLLAR) \
@@ -2353,7 +2364,11 @@ static void parse_operand(Context* context, ByteWriter* buf, TokenQueue* tokens)
                     }
                 }
                 if (tokens->expect(TOKEN_AT)) {
-                    buf->write(true);
+                    buf->write(true)->write(false);
+                    parse_expression(context, buf, tokens);
+                }
+                else if (tokens->expect(TOKEN_PLUS_AT)) {
+                    buf->write(true)->write(true);
                     parse_expression(context, buf, tokens);
                 }
                 else buf->write(false);
@@ -3039,6 +3054,13 @@ static Variable walk_struct(Variable str, const char* name) {
     Type::Field* field = NULL;
     for (int i = 0; i < str.type->struct_info.num_fields && !field; i++) {
         Type::Field* f = &str.type->struct_info.fields[i];
+        if (f->inlined && !f->name) {
+            Variable inlined(f->type);
+            inlined.as<void*>() = str.as<char*>() + f->offset;
+            Variable var = walk_struct(inlined, name);
+            if (!var.type) continue;
+            return var;
+        }
         if (strcmp(f->name, name) == 0) field = f;
     }
     if (!field) return Variable();
@@ -3062,7 +3084,7 @@ static Variable walk_struct(Variable str, const char* name) {
 static void init_struct(Context* context, Variable* str) {
     for (int i = 0; i < str->type->struct_info.num_fields; i++) {
         Type::Field* field = &str->type->struct_info.fields[i];
-        if (field->inlined) {
+        if (field->inlined && field->type->kind == TypeKind_Struct) {
             Variable field_var = Variable(field->type);
             field_var.as<char*>() = str->as<char*>() + field->offset;
             init_struct(context, &field_var);
@@ -3507,18 +3529,12 @@ static Variable execute_expression_node(Context* context, ByteReader* reader, St
                         }
                     }
                     if (reader->read<bool>()) {
+                        bool relative = reader->read<bool>();
                         Variable expr = execute_expression(context, reader);
                         if (!matches(&expr, VarType_Integer)) throw Error::runtime(context, "Offset is not an integer");
-                        field.offset = expr.as<uint64_t>();
+                        field.offset = expr.as<uint64_t>() | ((uint64_t)relative << 63);
                     }
-                    if (!field.inlined || field.name) fields.add(field);
-                    else if (field.inlined && !field.name) {
-                        for (int i = 0; i < field.type->struct_info.num_fields; i++) {
-                            Type::Field f = field.type->struct_info.fields[i];
-                            f.offset += field.offset;
-                            fields.add(f);
-                        }
-                    }
+                    fields.add(field);
                 }
                 for (int i = 0; i < fields.size; i++) {
                     for (int j = i + 1; j < fields.size; j++) {
