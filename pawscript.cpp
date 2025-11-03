@@ -579,9 +579,10 @@ static String unescape_string(String str) {
             case '\r': unescaped.concat("\\r"); break;
             case '\t': unescaped.concat("\\t"); break;
             case '\v': unescaped.concat("\\v"); break;
-            case ' '...'~': unescaped.add(c);   break;
+            case '\"': unescaped.concat("\"");  break;
             default:
-                if (c <= 255) unescaped.format("\\x%02x", c);
+                if (c >= ' ' && c <= '~') unescaped.add(c);
+                else if (c <= 255) unescaped.format("\\x%02x", c);
                 else if (c <= 65535) unescaped.format("\\u%04x", c);
                 else unescaped.format("\\U%08x", c);
                 break;
@@ -1796,7 +1797,7 @@ static TokenQueue* lex(Context* context, const char* code, const char* filename)
         else if (state.parse_state == state.ParsingStringLiteral || state.parse_state == state.ParsingCharLiteral) {
             switch (state.string_state.state) {
                 case state.string_state.CharStart:
-                    if (c == '\\') throw Error::syntax(file, row - 1, col, "Empty char literal");
+                    if (c == '\'') throw Error::syntax(file, row, col, "Empty char literal");
                     state.string_state.state = state.string_state.None;
                 case state.string_state.None:
                     if (c == '\\') state.string_state.state = state.string_state.Backslash;
@@ -1807,12 +1808,11 @@ static TokenQueue* lex(Context* context, const char* code, const char* filename)
                         state.parse_state = state.Idle;
                     }
                     else if (c == '\'' && state.parse_state == state.ParsingCharLiteral) {
+                        char* data = state.buffer->data;
                         Token* token = tokens->push(file, state.row, state.col);
                         token->type = TOKEN_INTEGER;
-                        token->value.integer = 0;
-                        for (char* ptr = state.buffer->data; *ptr; ptr++) {
-                            token->value.integer = token->value.integer * 0x100 + *ptr;
-                        }
+                        data += decode_utf8(state.buffer->data, (int*)&token->value.integer);
+                        if (*data != 0) throw Error::syntax(file, row, col, "Multiple characters in char literal");
                         state.parse_state = state.Idle;
                     }
                     else state.buffer->add(c);
@@ -1821,22 +1821,26 @@ static TokenQueue* lex(Context* context, const char* code, const char* filename)
                     state.string_state.num_digits = 0;
                     state.string_state.value = 0;
                     switch (c) {
-                        case 'a': c = '\a'; break;
-                        case 'b': c = '\b'; break;
-                        case 'e': c = '\e'; break;
-                        case 'f': c = '\f'; break;
-                        case 'n': c = '\n'; break;
-                        case 'r': c = '\r'; break;
-                        case 't': c = '\t'; break;
-                        case 'v': c = '\v'; break;
+                        case 'a':  c = '\a'; break;
+                        case 'b':  c = '\b'; break;
+                        case 'e':  c = '\e'; break;
+                        case 'f':  c = '\f'; break;
+                        case 'n':  c = '\n'; break;
+                        case 'r':  c = '\r'; break;
+                        case 't':  c = '\t'; break;
+                        case 'v':  c = '\v'; break;
+                        case '"':  c = '"';  break;
+                        case '\\': c = '\\'; break;
+                        case '\'': c = '\''; break;
                         case 'x':       state.string_state.state = state.string_state.Hex2;  break;
                         case 'u':       state.string_state.state = state.string_state.Hex4;  break;
                         case 'U':       state.string_state.state = state.string_state.Hex8;  break;
                         case '0'...'7': state.string_state.state = state.string_state.Octal; no_increment = true; break;
-                        case '\n': c = 0xFF; break;
+                        case '\n': c = '\n'; break;
+                        default: throw Error::syntax(file, row, col, "Invalid escape code");
                     }
                     if (state.string_state.state == state.string_state.Backslash) {
-                        if (c != -1) state.buffer->add(c);
+                        state.buffer->add(c);
                         state.string_state.state = state.string_state.None;
                     }
                     break;
@@ -1846,6 +1850,7 @@ static TokenQueue* lex(Context* context, const char* code, const char* filename)
                 case state.string_state.Hex8:
                 if ((state.string_state.state == state.string_state.Octal ? get_octal : get_hexadecimal)(c, &digit))
                     state.string_state.value = state.string_state.value * (state.string_state.state == state.string_state.Octal ? 8 : 16) + digit;
+                else if (state.string_state.state == state.string_state.Octal) state.string_state.num_digits = 2;
                 else throw Error::syntax(file, row, col, "Not a valid digit");
                 state.string_state.num_digits++;
                 if (state.string_state.num_digits == (
@@ -1854,8 +1859,7 @@ static TokenQueue* lex(Context* context, const char* code, const char* filename)
                     state.string_state.state == state.string_state.Hex4  ? 4 :
                     state.string_state.state == state.string_state.Hex8  ? 8 : 1
                 )) {
-                    if (state.string_state.state == state.string_state.Octal || state.string_state.state == state.string_state.Hex2) state.buffer->add(state.string_state.value);
-                    else encode_utf8(state.buffer, state.string_state.value);
+                    encode_utf8(state.buffer, state.string_state.value);
                     state.string_state.state = state.string_state.None;
                 }
                 break;
@@ -1952,7 +1956,7 @@ static TokenQueue* lex(Context* context, const char* code, const char* filename)
                 }
                 continue;
             }
-            if (exact_match == -1) throw Error::syntax(filename, row - state.buffer->length, col, "Invalid token");
+            if (exact_match == -1) throw Error::syntax(filename, row, col - state.buffer->length, "Invalid token");
         }
     }
     Token* token = tokens->push(file, state.row, state.col);
@@ -3932,11 +3936,12 @@ static void(*user_segfault_handler)(void* addr);
 static Context* curr_context;
 
 static Error* execute(Context* context, const char* code, const char* file) {
-    TokenQueue* tokens = lex(context, code, file);
+    TokenQueue* tokens = NULL;
     ByteWriter* writer = new ByteWriter;
     Error* err = NULL;
     Variable var(context->type_cache->primitive(TypeKind_Void));
     try {
+        tokens = lex(context, code, file);
         writer->write(tokens->peek()->filename);
         while (!tokens->expect(TOKEN_END_OF_FILE)) parse_command(context, writer, tokens);
         ByteReader* reader = writer->read();
