@@ -1,4 +1,3 @@
-#include <cstdlib>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -455,12 +454,15 @@ struct FFI {
     void push_f64(double value) {
 #ifdef _WIN32
         if (varargs) {
-            push_int64(*(uint64_t*)&value);
+            push_int(*(uint64_t*)&value);
             return;
         }
-#endif
+        if (num_ints >= NUM_FLT_REGS) stack.add(*(uint64_t*)&value);
+        else flt_regs[num_ints++] = value;
+#else
         if (num_floats >= NUM_FLT_REGS) stack.add(*(uint64_t*)&value);
         else flt_regs[num_floats++] = value;
+#endif
     }
     uint64_t get_int() {
         return int_value;
@@ -472,32 +474,48 @@ struct FFI {
         return float_value;
     }
     void __attribute__((noinline, optnone, naked)) call(void* ptr) { asm(
+        "push %r12\n"
+        "push %r13\n"
         "push %rbp\n"
         "mov %rsp, %rbp\n"
 
-        "push %r12\n"
-        "push %r13\n"
+#ifdef _WIN32
+        "mov %rcx, %r12\n"
+        "mov %rdx, %r13\n"
+#else
         "mov %rdi, %r12\n"
         "mov %rsi, %r13\n"
+#endif
 
-        "xor %rdx, %rdx\n"
-        "mov 0x88(%r12), %edx\n"
-        "imull $8, %edx\n"
-        "sub %rdx, %rsp\n"
+        "xor %rax, %rax\n"
+        "mov 0x88(%r12), %eax\n"
+        "inc %eax\n"
+        "imull $8, %eax\n"
+        "andl $0xFFFFFFF0, %eax\n"
+        "sub %rax, %rsp\n"
+#ifdef _WIN32
+        "mov %rax, %r8\n"
+        "mov %rsp, %rcx\n"
+        "mov 0x90(%r12), %rdx\n"
+        "sub $0x20, %rsp\n"
+#else
+        "mov %rax, %rdx\n"
         "mov %rsp, %rdi\n"
         "mov 0x90(%r12), %rsi\n"
+#endif
         "call memcpy\n"
 
         "xor %rax, %rax\n"
+#ifdef _WIN32
+        "mov 0x08(%r12), %rcx\n"
+        "mov 0x10(%r12), %rdx\n"
+        "mov 0x18(%r12), %r8\n"
+        "mov 0x20(%r12), %r9\n"
+#else
         "mov 0x08(%r12), %rdi\n"
         "mov 0x10(%r12), %rsi\n"
         "mov 0x18(%r12), %rdx\n"
         "mov 0x20(%r12), %rcx\n"
-        "movq 0x48(%r12), %xmm0\n"
-        "movq 0x50(%r12), %xmm1\n"
-        "movq 0x58(%r12), %xmm2\n"
-        "movq 0x60(%r12), %xmm3\n"
-#ifndef _WIN32
         "mov 0x28(%r12), %r8\n"
         "mov 0x30(%r12), %r9\n"
         "movq 0x68(%r12), %xmm4\n"
@@ -506,13 +524,21 @@ struct FFI {
         "movq 0x80(%r12), %xmm7\n"
         "mov 0x04(%r12), %eax\n"
 #endif
+        "movq 0x48(%r12), %xmm0\n"
+        "movq 0x50(%r12), %xmm1\n"
+        "movq 0x58(%r12), %xmm2\n"
+        "movq 0x60(%r12), %xmm3\n"
+
         "call *%r13\n"
+#ifdef _WIN32
+        "add $0x20, %rsp\n"
+#endif
         "mov %rax, 0x98(%r12)\n"
         "movq %xmm0, 0xA0(%r12)\n"
 
+        "leave\n"
         "pop %r13\n"
         "pop %r12\n"
-        "leave\n"
         "ret\n"
     ); }
 };
@@ -751,7 +777,7 @@ struct Type {
             Type::Field* field = &struct_info.fields[i];
             if (field->type->kind == TypeKind_Pointer) {
                 if (field->offset == -1) field->offset = prev_offset;
-                else if (field->offset & (1L << 63)) field->offset = prev_offset + (field->offset & (uint64_t)(1L << 63) - 1);
+                else if (field->offset & (1LL << 63)) field->offset = prev_offset + (field->offset & (uint64_t)(1LL << 63) - 1);
                 prev_offset = field->offset;
                 continue;
             }
@@ -760,7 +786,7 @@ struct Type {
                 if (this->size % alignment) field->offset = this->size + alignment - this->size % alignment;
                 else field->offset = this->size;
             }
-            else if (field->offset & (1L << 63)) field->offset = prev_offset + (field->offset & (uint64_t)(1L << 63) - 1);
+            else if (field->offset & (1LL << 63)) field->offset = prev_offset + (field->offset & (uint64_t)(1LL << 63) - 1);
             prev_offset = field->offset;
             size_t size = (field->inlined ? field->type->size : field->type->value_size()) + field->offset;
             if (this->size < size) this->size = size;
@@ -3003,9 +3029,28 @@ static Function* generate_function(Context* context, ByteReader* reader, Type* t
     buf->bytes(0x48, 0x89, 0xE5); // mov %rsp, %rbp
     buf->bytes(0x48, 0x81, 0xEC); // sub $x, %rsp
     buf->write<uint32_t>(ALIGN(type->function_info.num_params * 8, 16)); // enforce 16 byte stack alignment
-    int int_reg = 0, flt_reg = 0, stack_ptr = 2, ptr = 0; // skip rbp and return address
+    int ptr = 0;
+#ifdef _WIN32
+    int slot = 0, stack_ptr = 6; // skip rbp, return address and shadow space
+#else
+    int int_reg = 0, flt_reg = 0, stack_ptr = 2; // skip rbp and return address
+#endif
     for (int i = 0; i < type->function_info.num_params; i++) { // dump args into stack allocated array
         TypeKind kind = type->function_info.params[i].type->kind;
+#ifdef _WIN32
+        if ((kind == TypeKind_Float32 || kind == TypeKind_Float64) && slot < NUM_FLT_REGS) switch (slot++) {
+            case 0: buf->bytes(0x66, 0x0F, 0xD6, 0x84, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %xmm0, x(%rsp)
+            case 1: buf->bytes(0x66, 0x0F, 0xD6, 0x84, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %xmm1, x(%rsp)
+            case 2: buf->bytes(0x66, 0x0F, 0xD6, 0x84, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %xmm2, x(%rsp)
+            case 3: buf->bytes(0x66, 0x0F, 0xD6, 0x84, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %xmm3, x(%rsp)
+        }
+        else if (slot < NUM_INT_REGS) switch (slot++) {
+            case 0: buf->bytes(0x48, 0x89, 0x8C, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %rcx, x(%rsp)
+            case 1: buf->bytes(0x48, 0x89, 0x94, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %rdx, x(%rsp)
+            case 2: buf->bytes(0x4C, 0x89, 0x84, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %r8, x(%rsp)
+            case 3: buf->bytes(0x4C, 0x89, 0x8C, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %r9, x(%rsp)
+        }
+#else
         if ((kind == TypeKind_Float32 || kind == TypeKind_Float64) && flt_reg < NUM_FLT_REGS) switch (flt_reg++) {
             case 0: buf->bytes(0x66, 0x0F, 0xD6, 0x84, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %xmm0, x(%rsp)
             case 1: buf->bytes(0x66, 0x0F, 0xD6, 0x84, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %xmm1, x(%rsp)
@@ -3024,17 +3069,28 @@ static Function* generate_function(Context* context, ByteReader* reader, Type* t
             case 4: buf->bytes(0x4C, 0x89, 0x84, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %r8, x(%rsp)
             case 5: buf->bytes(0x4C, 0x89, 0x8C, 0x24)->write<uint32_t>(ptr++ * 8); break; // mov %r9, x(%rsp)
         }
+#endif
         else {
             buf->bytes(0x48, 0x8B, 0x85)->write<uint32_t>(stack_ptr++ * 8); // mov x(%rbp), %rax
             buf->bytes(0x48, 0x89, 0x84, 0x24)->write<uint32_t>(ptr++ * 8); // mov %rax, x(%rsp)
         }
     }
     // call the driver with func meta and arg array
+#ifdef _WIN32
+    buf->bytes(0x49, 0x89, 0xE1);                    // mov %rsp, %r9   << 4th arg
+    buf->bytes(0x48, 0xB9); buf->write(context);     // mov $x, %rcx    << 1st arg
+    buf->bytes(0x48, 0xBA); buf->write(type);        // mov $x, %rdx    << 2nd arg
+    buf->bytes(0x49, 0xB8);                          // mov $x, %r8     << 3rd arg (to be filled in later)
+#else
     buf->bytes(0x48, 0x89, 0xE1);                    // mov %rsp, %rcx   << 4th arg
     buf->bytes(0x48, 0xBF); buf->write(context);     // mov $x, %rdi     << 1st arg
     buf->bytes(0x48, 0xBE); buf->write(type);        // mov $x, %rsi     << 2nd arg
     buf->bytes(0x48, 0xBA);                          // mov $x, %rdx     << 3rd arg (to be filled in later)
+#endif
     int off = buf->size; buf->write<uint64_t>(0);
+#ifdef _WIN32
+    buf->bytes(0x48, 0x83, 0xEC, 0x20);              // sub $20, %rsp    << allocate shadow space
+#endif
     buf->bytes(0x48, 0xB8); buf->write(call_driver); // mov $x, %rax
     buf->bytes(0xFF, 0xD0);                          // call %rax
     buf->bytes(0x66, 0x48, 0x0F, 0x6E, 0xC0);        // movq %rax, %xmm0 << return in both rax (int) and xmm0 (float)
@@ -3042,6 +3098,7 @@ static Function* generate_function(Context* context, ByteReader* reader, Type* t
     buf->bytes(0xC3);                                // ret
 
     func = (Function*)context->new_allocation(sizeof(Function) + buf->size, scoped, type, Allocation::function_cleanup);
+    memcpy(buf->bytes + off, &func, sizeof(Function*));
     memcpy((char*)func + sizeof(Function), buf->bytes, buf->size);
     func->name = (char*)name;
     func->file = (char*)file;
@@ -3061,7 +3118,6 @@ static Function* generate_function(Context* context, ByteReader* reader, Type* t
     }
     func->jmp[0] = 0xE9;
     *(uint32_t*)(func->jmp + 1) = sizeof(Function) - 5;
-    *(Function**)((char*)func + sizeof(Function) + off) = func;
     make_executable(func, sizeof(Function) + buf->size);
     reader->skip(func->length);
     if (capture_mode == CaptureMode_None) context->function_cache->add(func_ptr, func);
@@ -3733,7 +3789,12 @@ static Variable execute_expression_node(Context* context, ByteReader* reader, St
         } break;
         case AST_INCLUDE: {
             char* name = reader->read<char*>();
-            if (access(context->resource(name).data, F_OK) != 0) throw Error::runtime(context, String::new_format("File '%s' not found", name));
+#ifdef _WIN32
+            if (GetFileAttributes(context->resource(name).data) == -1)
+#else
+            if (access(context->resource(name).data, F_OK) == 0)
+#endif
+                throw Error::runtime(context, String::new_format("File '%s' not found", name));
             context->push_stack_frame("<include>");
             Error* error = execute_file(context, name);
             context->pop_stack_frame();
@@ -4018,7 +4079,7 @@ static void* segfault_addr = NULL;
 
 #ifdef _WIN32
 static LONG WINAPI handle_segfault(EXCEPTION_POINTERS* exception) { \
-    segfault_addr = (void*)(uintptr_t)err->ExceptionInformation[1];
+    segfault_addr = (void*)(uintptr_t)exception->ExceptionRecord->ExceptionInformation[1];
 #else
 static void handle_segfault(int signum, siginfo_t* info) { \
     segfault_addr = info->si_addr;
