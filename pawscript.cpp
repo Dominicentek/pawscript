@@ -825,6 +825,10 @@ struct Variable {
             memcpy(ptr, &other, size);
             return *this;
         }
+        T operator=(const Value<T>& other) {
+            memcpy(ptr, other.ptr, size < other.size ? size : other.size);
+            return *this;
+        }
         operator T() const {
             T value = {};
             memcpy(&value, ptr, size);
@@ -2143,17 +2147,26 @@ static void parse_operand(Context* context, ByteWriter* buf, TokenQueue* tokens)
         parse_expression(context, buf, tokens);
         if (!tokens->expect(TOKEN_BRACKET_CLOSE)) throw Error::parser(tokens->pop(), "Expected ']'");
     }
-    else if ((token = tokens->expect(TOKEN_sizeof)) || (token = tokens->expect(TOKEN_typeof)) || (token = tokens->expect(TOKEN_delete))) {
-        if (token->type == TOKEN_typeof) buf->write(AST_TYPEOF);
-        else if (token->type == TOKEN_delete) buf->write(AST_DELETE);
-        else buf->write(AST_SIZEOF);
-        buf->write<int32_t>(token->row)->write<int32_t>(token->col);
+    else if ((token = tokens->expect(TOKEN_sizeof))) {
+        buf->write(AST_SIZEOF)->write<int32_t>(token->row)->write<int32_t>(token->col);
         if (!tokens->expect(TOKEN_PARENTHESIS_OPEN)) throw Error::parser(tokens->pop(), "Expected '('");
         if (tokens->expect(TOKEN_TRIPLE_DOT)) buf->write(true);
         else {
             buf->write(false);
             parse_expression(context, buf, tokens);
         }
+        if (!tokens->expect(TOKEN_PARENTHESIS_CLOSE)) throw Error::parser(tokens->pop(), "Expected ')'");
+    }
+    else if ((token = tokens->expect(TOKEN_typeof))) {
+        buf->write(AST_TYPEOF)->write<int32_t>(token->row)->write<int32_t>(token->col);
+        if (!tokens->expect(TOKEN_PARENTHESIS_OPEN)) throw Error::parser(tokens->pop(), "Expected '('");
+        parse_expression(context, buf, tokens);
+        if (!tokens->expect(TOKEN_PARENTHESIS_CLOSE)) throw Error::parser(tokens->pop(), "Expected ')'");
+    }
+    else if ((token = tokens->expect(TOKEN_delete))) {
+        buf->write(AST_DELETE)->write<int32_t>(token->row)->write<int32_t>(token->col);
+        if (!tokens->expect(TOKEN_PARENTHESIS_OPEN)) throw Error::parser(tokens->pop(), "Expected '('");
+        parse_expression(context, buf, tokens);
         if (!tokens->expect(TOKEN_PARENTHESIS_CLOSE)) throw Error::parser(tokens->pop(), "Expected ')'");
     }
     else if ((token = tokens->expect(TOKEN_scopeof))) {
@@ -2804,25 +2817,25 @@ static Variable cast(Context* context, Type* type, Variable var, bool bitcast = 
     Variable out(type);
     if (bitcast) out << var;
     else if (type->kind == TypeKind_Float32) {
-        if      (var.type->kind == TypeKind_Float32) out.as<float>() = var.as<float>();
-        else if (var.type->kind == TypeKind_Float64) out.as<float>() = var.as<double>();
+        if      (type->kind == TypeKind_Float32) out.as<float>() = var.as<float>();
+        else if (type->kind == TypeKind_Float64) out.as<float>() = var.as<double>();
         else {
-            if (var.type->is_unsigned) out.as<float>() = out.as<uint64_t>();
+            if (type->is_unsigned) out.as<float>() = out.as<uint64_t>();
             else out.as<float>() = out.as<int64_t>();
         }
     }
     else if (type->kind == TypeKind_Float64) {
-        if      (var.type->kind == TypeKind_Float32) out.as<double>() = var.as<float>();
-        else if (var.type->kind == TypeKind_Float64) out.as<double>() = var.as<double>();
+        if      (type->kind == TypeKind_Float32) out.as<double>() = var.as<float>();
+        else if (type->kind == TypeKind_Float64) out.as<double>() = var.as<double>();
         else {
-            if (var.type->is_unsigned) out.as<double>() = out.as<uint64_t>();
+            if (type->is_unsigned) out.as<double>() = out.as<uint64_t>();
             else out.as<double>() = out.as<int64_t>();
         }
     }
     else {
         uint64_t value = 0;
-        if      (var.type->kind == TypeKind_Float32) out.as<uint64_t>() = var.as<float>();
-        else if (var.type->kind == TypeKind_Float64) out.as<uint64_t>() = var.as<double>();
+        if      (type->kind == TypeKind_Float32) out.as<uint64_t>() = var.as<float>();
+        else if (type->kind == TypeKind_Float64) out.as<uint64_t>() = var.as<double>();
         else out << var;
     }
     return out;
