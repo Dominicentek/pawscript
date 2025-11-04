@@ -63,86 +63,12 @@ int compare_float64(const void* a, const void* b) {
 
 // == CLASS IMPLEMENTATIONS ==
 
-template<typename T> struct List {
-    int size = 0, capacity = 4;
-    T* items = (T*)malloc(sizeof(T) * capacity);
-    ~List() { free(items); }
-    T& get(int i) {
-        return items[i];
-    }
-    T add(T item) {
-        if (size == capacity) {
-            capacity *= 2;
-            items = (T*)realloc(items, sizeof(T) * capacity);
-        }
-        items[size++] = item;
-        return item;
-    }
-    void removeat(int index) {
-        if (index < 0 || index >= size) return;
-        size--;
-        if (index != size) memmove(
-            items + index, items + index + 1,
-            sizeof(T) * (size - index)
-        );
-    }
-    void remove(T item, Compare comp = NULL) {
-        removeat(indexof(item, comp));
-    }
-    int indexof(T item, Compare comp = NULL) {
-        for (int i = 0; i < size; i++) {
-            if (comp ? comp(&items[i], &item) == 0 : items[i] == item) return i;
-        }
-        return -1;
-    }
-};
-
-struct Allocator {
-    List<void*> allocs = List<void*>();
-    bool watch_next = false;
-    ~Allocator() {
-        for (int i = 0; i < allocs.size; i++) std::free(allocs.get(i));
-    }
-    template<typename T> T* malloc(size_t count = 1) {
-        if (count == 0) return NULL;
-        void* ptr = std::malloc(sizeof(T) * count);
-        memset(ptr, 0, sizeof(T) * count);
-        allocs.add(ptr);
-        return (T*)ptr;
-    }
-    template<typename T> T* realloc(T* ptr, size_t count) {
-        int index = allocs.indexof(ptr);
-        if (index == -1) return NULL;
-        allocs.get(index) = ptr = (T*)std::realloc(ptr, sizeof(T) * count);
-        return (T*)ptr;
-    }
-    bool free(void* ptr) {
-        int index = allocs.indexof(ptr);
-        if (index == -1) return false;
-        allocs.removeat(index);
-        std::free(ptr);
-        return true;
-    }
-    char* strdup(const char* src) {
-        int len = strlen(src);
-        char* dup = malloc<char>(len + 1);
-        memcpy(dup, src, len);
-        return dup;
-    }
-    template<typename T> T* copy(T* ptr, size_t count = 1) {
-        T* data = malloc<T>(count);
-        memcpy((void*)data, ptr, sizeof(T) * count);
-        return data;
-    }
-};
-
-static Allocator* alloc = new Allocator;
-
 template<typename T> struct Set {
     int size = 0, capacity = 4;
-    T* items = alloc->malloc<T>(capacity);
+    T* items = (T*)malloc(sizeof(T) * capacity);
     Compare compare;
     Set(Compare compare): compare(compare) {}
+    ~Set() { free(items); }
     T add(T item) {
         if (size == capacity) {
             capacity *= 2;
@@ -164,6 +90,80 @@ template<typename T> struct Set {
             items + index, items + index + 1,
             sizeof(T) * (size - index)
         );
+    }
+};
+
+struct Allocator {
+    Set<void*> allocs = Set<void*>(compare_int64);
+    bool watch_next = false;
+    ~Allocator() {
+        for (int i = 0; i < allocs.size; i++) std::free(allocs.items[i]);
+    }
+    template<typename T> T* malloc(size_t count = 1) {
+        if (count == 0) return NULL;
+        void* ptr = std::malloc(sizeof(T) * count);
+        memset(ptr, 0, sizeof(T) * count);
+        allocs.add(ptr);
+        return (T*)ptr;
+    }
+    template<typename T> T* realloc(T* ptr, size_t count) {
+        if (!allocs.find(ptr)) return NULL;
+        allocs.remove(ptr);
+        allocs.add(ptr = (T*)std::realloc(ptr, sizeof(T) * count));
+        return (T*)ptr;
+    }
+    bool free(void* ptr) {
+        if (!allocs.find(ptr)) return false;
+        allocs.remove(ptr);
+        std::free(ptr);
+        return true;
+    }
+    char* strdup(const char* src) {
+        int len = strlen(src);
+        char* dup = malloc<char>(len + 1);
+        memcpy(dup, src, len);
+        return dup;
+    }
+    template<typename T> T* copy(T* ptr, size_t count = 1) {
+        T* data = malloc<T>(count);
+        memcpy((void*)data, ptr, sizeof(T) * count);
+        return data;
+    }
+};
+
+static Allocator* alloc = new Allocator;
+
+template<typename T> struct List {
+    int size = 0, capacity = 4;
+    T* items = alloc->malloc<T>(capacity);
+    ~List() { alloc->free(items); }
+    T& get(int i) {
+        return items[i];
+    }
+    T add(T item) {
+        if (size == capacity) {
+            capacity *= 2;
+            items = alloc->realloc(items, capacity);
+        }
+        items[size++] = item;
+        return item;
+    }
+    void removeat(int index) {
+        if (index < 0 || index >= size) return;
+        size--;
+        if (index != size) memmove(
+            items + index, items + index + 1,
+            sizeof(T) * (size - index)
+        );
+    }
+    void remove(T item, Compare comp = NULL) {
+        removeat(indexof(item, comp));
+    }
+    int indexof(T item, Compare comp = NULL) {
+        for (int i = 0; i < size; i++) {
+            if (comp ? comp(&items[i], &item) == 0 : items[i] == item) return i;
+        }
+        return -1;
     }
 };
 
@@ -1107,12 +1107,14 @@ struct TypeCache: Map<uint64_t, Type*> {
 
 struct Allocation {
     void* data;
-    size_t size;
+    size_t size = -1;
     void(*cleanup)(void*, Context*, Type*);
     Type* type; Context* context;
+    Allocation(void* ptr): data(ptr) {}
     Allocation(size_t size, Context* context, Type* type, void(*cleanup)(void*, Context*, Type*)):
         size(size), data(alloc->malloc<uint8_t>(size)), context(context), type(type), cleanup(cleanup) {}
     ~Allocation() {
+        if (size == -1) return;
         cleanup(data, context, type);
         alloc->free(data);
     }
@@ -1147,11 +1149,11 @@ struct Context {
         }
     };
 
-    List<char*>* strings;
-    List<ByteReader*>* bytecodes;
+    Set<char*>* strings;
+    Set<ByteReader*>* bytecodes;
     Stack<Scope*>* call_stack;
     Stack<Map<char*, Variable*>*>* variables;
-    Stack<List<Allocation*>*>* allocs;
+    Stack<Set<Allocation*>*>* allocs;
     Map<void*, Function*>* function_cache;
     TypeCache* type_cache;
     State state = State_Running;
@@ -1214,16 +1216,16 @@ struct Context {
     }
     void push_codeblock() {
         variables->push(new Map<char*, Variable*>(compare_strings));
-        allocs->push(new List<Allocation*>);
+        allocs->push(new Set<Allocation*>([](const void* _a, const void* _b) -> int {
+            Allocation* a = *(Allocation**)_a;
+            Allocation* b = *(Allocation**)_b;
+            int diff = (b->type->kind == TypeKind_Struct) - (a->type->kind == TypeKind_Struct);
+            return diff == 0 ? (uintptr_t)b - (uintptr_t)a : diff;
+        }));
     }
     void pop_codeblock() {
         Map<char*, Variable*>* map = variables->peek();
-        List<Allocation*>* scope = allocs->peek();
-        qsort(scope->items, scope->size, sizeof(Allocation*), [](const void* _a, const void* _b) {
-            Allocation* a = *(Allocation**)_a;
-            Allocation* b = *(Allocation**)_b;
-            return (b->type->kind == TypeKind_Struct) - (a->type->kind == TypeKind_Struct);
-        });
+        Set<Allocation*>* scope = allocs->peek();
         for (int i = 0; i < scope->size; i++) delete scope->items[i];
         for (int i = 0; i < map->size; i++) map->pairs[i].value->release();
         delete variables->pop();
@@ -1235,7 +1237,7 @@ struct Context {
         while (variables->size > scope) pop_codeblock();
     }
     void* new_allocation(size_t size, bool scoped, Type* type, void(*cleanup)(void*, Context*, Type*) = NULL) {
-        List<Allocation*>* scope = allocs->items[0];
+        Set<Allocation*>* scope = allocs->items[0];
         if (scoped) scope = allocs->peek();
         Allocation* alloc = new Allocation(size, this, type, cleanup);
         scope->add(alloc);
@@ -1245,41 +1247,41 @@ struct Context {
         if (new_scope < 0) new_scope = 0;
         if (new_scope > variables->size - 1) new_scope = variables->size - 1;
         for (int i = allocs->size - 1; i >= 0; i--) {
-            List<Allocation*>* scope = allocs->items[i];
-            for (int j = 0; j < scope->size; j++) {
-                if (scope->items[j]->data != ptr) continue;
-                allocs->items[new_scope]->add(scope->items[j]);
-                scope->removeat(j);
-                return;
-            }
+            Set<Allocation*>* scope = allocs->items[i];
+            Allocation temp = ptr;
+            Allocation** alloc_ptr = scope->find(&temp);
+            if (!alloc_ptr) continue;
+            scope->remove(*alloc_ptr);
+            allocs->items[new_scope]->add(*alloc_ptr);
         }
     }
     void delete_allocation(void* ptr) {
         for (int i = allocs->size - 1; i >= 0; i--) {
-            List<Allocation*>* scope = allocs->items[i];
-            for (int j = 0; j < scope->size; j++) {
-                if (scope->items[j]->data != ptr) continue;
-                delete scope->items[j];
-                scope->removeat(j);
-                return;
-            }
+            Set<Allocation*>* scope = allocs->items[i];
+            Allocation temp = ptr;
+            Allocation** alloc_ptr = scope->find(&temp);
+            if (!alloc_ptr) continue;
+            delete *alloc_ptr;
+            scope->remove(*alloc_ptr);
         }
     }
     int alloc_size(void* ptr) {
         for (int i = allocs->size - 1; i >= 0; i--) {
-            List<Allocation*>* scope = allocs->items[i];
-            for (int j = 0; j < scope->size; j++) {
-                if (scope->items[j]->data == ptr) return scope->items[j]->size;
-            }
+            Set<Allocation*>* scope = allocs->items[i];
+            Allocation temp = ptr;
+            Allocation** alloc_ptr = scope->find(&temp);
+            if (!alloc_ptr) continue;
+            return (*alloc_ptr)->size;
         }
         return -1;
     }
     int alloc_scope(void* ptr) {
         for (int i = allocs->size - 1; i >= 0; i--) {
-            List<Allocation*>* scope = allocs->items[i];
-            for (int j = 0; j < scope->size; j++) {
-                if (scope->items[j]->data == ptr) return i;
-            }
+            Set<Allocation*>* scope = allocs->items[i];
+            Allocation temp = ptr;
+            Allocation** alloc_ptr = scope->find(&temp);
+            if (!alloc_ptr) continue;
+            return i;
         }
         return -1;
     }
@@ -4024,7 +4026,7 @@ API Context* pawscript_create_context() {
     static bool did_atexit = false;
     if (!did_atexit) {
         did_atexit = true;
-        atexit([]() { delete alloc; });
+        //atexit([]() { delete alloc; });
 #ifdef _WIN32
         SetUnhandledExceptionFilter(handle_segfault);
 #else
@@ -4036,13 +4038,13 @@ API Context* pawscript_create_context() {
 #endif
     }
     Context* context = alloc->malloc<Context>();
-    context->strings = new List<char*>;
-    context->bytecodes = new List<ByteReader*>;
+    context->strings = new Set<char*>(compare_int64);
+    context->bytecodes = new Set<ByteReader*>(compare_int64);
     context->type_cache = new TypeCache;
     context->function_cache = new Map<void*, Function*>(compare_int64);
     context->call_stack = new Stack<Scope*>;
     context->variables = new Stack<Map<char*, Variable*>*>;
-    context->allocs = new Stack<List<Allocation*>*>;
+    context->allocs = new Stack<Set<Allocation*>*>;
     context->push_stack_frame("<global>");
     context->store("@RESULT@", Variable(context->type_cache->primitive(TypeKind_Void)));
     return context;
@@ -4135,7 +4137,8 @@ API bool pawscript_get(Context* context, const char* name, void* data) {
 API bool pawscript_set(Context* context, const char* name, void* data) {
     Variable var = context->load(name);
     if (!var.type) return false;
-    memcpy(var.ptr(), data, var.type->value_size());
+    if (var.type->kind == TypeKind_Function) var.as<void*>() = data;
+    else memcpy(var.ptr(), data, var.type->value_size());
     return true;
 }
 

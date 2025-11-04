@@ -43,7 +43,7 @@ void pawscript_log_error(PawScriptError* error, FILE* f);
 void pawscript_destroy_error(PawScriptError* error);
 void pawscript_destroy_context(PawScriptContext* context);
 
-void on_segfault(void(*handler)(int signum));
+void on_segfault(void(*handler)(void* addr));
 
 #ifdef __cplusplus
 }
