@@ -846,9 +846,10 @@ struct Variable {
     template<typename T> struct Value {
         T* ptr;
         int size = 0;
-        Value(T* ptr, int size = sizeof(T)): ptr(ptr), size(size) {}
+        bool is_unsigned = false;
+        Value(T* ptr, int size = sizeof(T), bool is_unsigned = false): ptr(ptr), size(size), is_unsigned(is_unsigned) {}
         T operator=(const T& other) {
-            memcpy(ptr, &other, size & ~(1LL << 63));
+            memcpy(ptr, &other, size);
             return *this;
         }
         T operator=(const Value<T>& other) {
@@ -856,9 +857,8 @@ struct Variable {
         }
         operator T() const {
             T value = {};
-            size_t size = this->size & ~(1LL << 63);
             memcpy(&value, ptr, size);
-            bool is_negative = (this->size & (1LL << 63)) ? false : (uintptr_t)value & (1 << (size * 8 - 1));
+            bool is_negative = is_unsigned ? false : (uintptr_t)value & (1 << (size * 8 - 1));
             int negative_bytes = sizeof(T) - size;
             if (negative_bytes > 0) memset((char*)&value + size, is_negative ? 0xFF : 0x00, negative_bytes);
             return value;
@@ -900,7 +900,7 @@ struct Variable {
     }
 
     template<typename T> Value<T> as() const {
-        return Value<T>(ptr<T>(), (sizeof(T) < type->value_size() ? sizeof(T) : type->value_size()) & ((uint64_t)type->is_unsigned << 63));
+        return Value<T>(ptr<T>(), sizeof(T) < type->value_size() ? sizeof(T) : type->value_size(), type->is_unsigned);
     }
     template<typename T = void> T* ptr() const {
         return (T*)(ref ? _value : &_value);
