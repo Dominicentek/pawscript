@@ -848,16 +848,19 @@ struct Variable {
         int size = 0;
         Value(T* ptr, int size = sizeof(T)): ptr(ptr), size(size) {}
         T operator=(const T& other) {
-            memcpy(ptr, &other, size);
+            memcpy(ptr, &other, size & ~(1LL << 63));
             return *this;
         }
         T operator=(const Value<T>& other) {
-            memcpy(ptr, other.ptr, size < other.size ? size : other.size);
-            return *this;
+            return *this = (T)other;
         }
         operator T() const {
             T value = {};
+            size_t size = this->size & ~(1LL << 63);
             memcpy(&value, ptr, size);
+            bool is_negative = (this->size & (1LL << 63)) ? false : (uintptr_t)value & (1 << (size * 8 - 1));
+            int negative_bytes = sizeof(T) - size;
+            if (negative_bytes > 0) memset((char*)&value + size, is_negative ? 0xFF : 0x00, negative_bytes);
             return value;
         }
         Value<T>& operator  +=(const T& oth) { T val = *this; val  += oth; *this = val; return *this; }
@@ -889,20 +892,17 @@ struct Variable {
         if (!type || !other.type) return *this;
         uint64_t value = 0;
         memcpy(&value, other.ptr(), other.type->value_size());
+        bool is_negative = other.type->is_unsigned ? false : value & (1 << (other.type->value_size() * 8 - 1));
+        int negative_size = type->value_size() - other.type->value_size();
+        if (negative_size > 0) memset((char*)&value + other.type->value_size(), is_negative ? 0xFF : 0x00, negative_size);
         memcpy(ptr(), &value, type->value_size());
         return *this;
     }
 
-    template<typename T> Value<T> as() {
+    template<typename T> Value<T> as() const {
         return Value<T>(ptr<T>(), sizeof(T) < type->value_size() ? sizeof(T) : type->value_size());
     }
-    template<typename T> const Value<T> as() const {
-        return Value<T>(ptr<T>(), sizeof(T) < type->value_size() ? sizeof(T) : type->value_size());
-    }
-    template<typename T = void> T* ptr() {
-        return (T*)(ref ? _value : &_value);
-    }
-    template<typename T = void> const T* ptr() const {
+    template<typename T = void> T* ptr() const {
         return (T*)(ref ? _value : &_value);
     }
     Variable deref(int offset = 0) {
