@@ -900,7 +900,7 @@ struct Variable {
     }
 
     template<typename T> Value<T> as() const {
-        return Value<T>(ptr<T>(), sizeof(T) < type->value_size() ? sizeof(T) : type->value_size());
+        return Value<T>(ptr<T>(), (sizeof(T) < type->value_size() ? sizeof(T) : type->value_size()) & ((uint64_t)type->is_unsigned << 63));
     }
     template<typename T = void> T* ptr() const {
         return (T*)(ref ? _value : &_value);
