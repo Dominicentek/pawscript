@@ -6,7 +6,7 @@ Low level embeddable scripting language for C projects.
 > Only supports x86_64 architectures that use either System V or Win64 ABIs. (TODO: aarch64 System V support)
 
 > [!WARNING]
-> Windows and macOS untested, only tested on Linux
+> macOS untested, only tested on Linux and Windows
 
 ## Building
 
@@ -252,9 +252,9 @@ Type kinds:
 | `x != y`    | `8` `->`   | `any`          | `any`           | Checks if `x` is not equal to `y` |
 | `x & y`     | `7` `->`   | `integer`      | `integer`       | Bitwise ANDs `x` and `y` |
 | `x ^ y`     | `6` `->`   | `integer`      | `integer`       | Bitwise XORs `x` and `y` |
-| `x | y`     | `5` `->`   | `integer`      | `integer`       | Bitwise ORs `x` and `y` |
+| `x \| y`     | `5` `->`   | `integer`      | `integer`       | Bitwise ORs `x` and `y` |
 | `x && y`    | `4` `->`   | `any`          | `any`           | If `x` and `y` is truthy, `1` is returned, otherwise `0` |
-| `x || y`    | `3` `->`   | `any`          | `any`           | If `x` or `y` is truthy, `1` is returned, otherwise `0` |
+| `x \|\| y`    | `3` `->`   | `any`          | `any`           | If `x` or `y` is truthy, `1` is returned, otherwise `0` |
 | `x ? y`     | `2` `->`   | `any`          | `any`           | If `x` is truthy, `x` is returned, otherwise `y` |
 | `x = y`     | `1` `<-`   | `assignable`   | `any`           | Assigns `y` to `x` |
 | `x += y`    | `1` `<-`   | `assignable`   | `number`        | Performs `x + y` and stores the result to `x` |
@@ -266,7 +266,7 @@ Type kinds:
 | `x <<= y`   | `1` `<-`   | `assignable`   | `integer`       | Performs `x << y` and stores the result to `x` |
 | `x >>= y`   | `1` `<-`   | `assignable`   | `integer`       | Performs `x >> y` and stores the result to `x` |
 | `x &= y`    | `1` `<-`   | `assignable`   | `integer`       | Performs `x & y` and stores the result to `x` |
-| `x |= y`    | `1` `<-`   | `assignable`   | `integer`       | Performs `x | y` and stores the result to `x` |
+| `x \|= y`    | `1` `<-`   | `assignable`   | `integer`       | Performs `x \| y` and stores the result to `x` |
 | `x ^= y`    | `1` `<-`   | `assignable`   | `integer`       | Performs `x ^ y` and stores the result to `x` |
 | `x ?= y`    | `1` `<-`   | `assignable`   | `any`           | Performs `x ? y` and stores the result to `x` |
 | `++x`       |            |                | `assignable`    | Increments `x` and stores it to itself |
