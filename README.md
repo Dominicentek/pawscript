@@ -350,6 +350,14 @@ Evaluates the expression
 
 ## Engine API
 
+In order to use the library, you need to have exactly one C++ file containing this:
+```c
+#define PAWSCRIPT_IMPLEMENTATION
+#include "pawscript.h"
+```
+
+### Functions
+
 * `PawScriptContext* pawscript_create_context()`
   * `returns`: A new script context
 * `PawScriptError* pawscript_run(PawScriptContext* context, const char* code)`
