@@ -530,7 +530,7 @@ struct FFI {
     double get_f64() {
         return float_value;
     }
-    void __attribute__((noinline, optnone, naked)) call(void* ptr) { asm(
+    void __attribute__((naked)) call(void* ptr) { asm(
         "push %r12\n"
         "push %r13\n"
         "push %rbp\n"
