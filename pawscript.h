@@ -89,31 +89,31 @@ typedef uint64_t(*HashFunc)(void* ptr);
 
 // == COMPARATORS ==
 
-int compare_strings(const void* a, const void* b) {
+static int compare_strings(const void* a, const void* b) {
     return strcmp(*(char**)a, *(char**)b);
 }
 
-int compare_int8(const void* a, const void* b) {
+static int compare_int8(const void* a, const void* b) {
     return *(int8_t*)b - *(int8_t*)a;
 }
 
-int compare_int16(const void* a, const void* b) {
+static int compare_int16(const void* a, const void* b) {
     return *(int16_t*)b - *(int16_t*)a;
 }
 
-int compare_int32(const void* a, const void* b) {
+static int compare_int32(const void* a, const void* b) {
     return *(int32_t*)b - *(int32_t*)a;
 }
 
-int compare_int64(const void* a, const void* b) {
+static int compare_int64(const void* a, const void* b) {
     return *(int64_t*)b - *(int64_t*)a;
 }
 
-int compare_float32(const void* a, const void* b) {
+static int compare_float32(const void* a, const void* b) {
     return (*(float*)a > *(float*)b) - (*(float*)a < *(float*)b);
 }
 
-int compare_float64(const void* a, const void* b) {
+static int compare_float64(const void* a, const void* b) {
     return (*(double*)a > *(double*)b) - (*(double*)a < *(double*)b);
 }
 
@@ -779,7 +779,7 @@ struct Type {
     struct Field: Param {
         size_t offset = 0;
         uintptr_t value = 0;
-        bool inlined = 0;
+        int64_t inline_size = -1;
     };
     Type() { memset((void*)this, 0, sizeof(*this)); }
 
@@ -832,20 +832,14 @@ struct Type {
         size_t prev_offset = 0;
         for (int i = 0; i < struct_info.num_fields; i++) {
             Type::Field* field = &struct_info.fields[i];
-            if (field->type->kind == TypeKind_Pointer) {
-                if (field->offset == -1) field->offset = prev_offset;
-                else if (field->offset & (1LL << 63)) field->offset = prev_offset + (field->offset & (uint64_t)(1LL << 63) - 1);
-                prev_offset = field->offset;
-                continue;
-            }
-            size_t alignment = field->inlined ? field->type->alignment : field->type->value_size();
+            size_t alignment = field->inline_size != -1 ? field->type->alignment : field->type->value_size();
             if (field->offset == -1) {
                 if (this->size % alignment) field->offset = this->size + alignment - this->size % alignment;
                 else field->offset = this->size;
             }
             else if (field->offset & (1LL << 63)) field->offset = prev_offset + (field->offset & (uint64_t)(1LL << 63) - 1);
             prev_offset = field->offset;
-            size_t size = (field->inlined ? field->type->size : field->type->value_size()) + field->offset;
+            size_t size = (field->inline_size == -1 ? field->type->value_size() : field->type->size * field->inline_size) + field->offset;
             if (this->size < size) this->size = size;
             if (this->alignment < alignment) this->alignment = alignment;
         }
@@ -886,8 +880,11 @@ struct Type {
                 .concat_if(i + 1 < function_info.num_params, ", ");
             }).concat(")");
             case TypeKind_Struct:   return String::new_format("struct S%ld { ", (visited_list->add(this), visited_list->size)).iterate(struct_info.num_fields, [&](int i) { return String()
-                .concat_if(struct_info.fields[i].inlined, "inline ")
-                .format("%s %s @ %ld; ", struct_info.fields[i].type->to_string(visited_list), struct_info.fields[i].name, struct_info.fields[i].offset);
+                .concat_if(struct_info.fields[i].inline_size != -1, String::new_format("inline(%ld) ", struct_info.fields[i].inline_size))
+                .format("%s %s @ %ld; ", struct_info.fields[i].inline_size == -1 || struct_info.fields[i].inline_size == 1
+                    ? struct_info.fields[i].type->to_string(visited_list) : "...",
+                    struct_info.fields[i].name, struct_info.fields[i].offset
+                );
             }).concat("}");
             case TypeKind_Deferred: return String::new_format("(defer %s)", defer_info.name);
             case TypeKind_Parent:   return String::new_format("(parent %d)", parent_info.offset);
@@ -1005,7 +1002,7 @@ struct Variable {
             case TypeKind_Pointer:  return String::new_format("0x%016lx", (uint64_t)as<uint64_t>());
             case TypeKind_Type:     return as<Type*>()->to_string();
             case TypeKind_Struct:   return !as<void*>() ? "(null)" : String().concat("{").iterate(type->struct_info.num_fields, [&](int i) { return String()
-                .format(" %s = %s", type->struct_info.fields[i].name, type->struct_info.fields[i].inlined
+                .format(" %s = %s", type->struct_info.fields[i].name, type->struct_info.fields[i].inline_size != -1
                     ? String::new_format("%s", Variable(type->struct_info.fields[i].type).lvalue(ptr<char*>() + type->struct_info.fields[i].offset).to_string())
                     : String::new_format("%s", Variable(type->struct_info.fields[i].type).lvalue(as <char*>() + type->struct_info.fields[i].offset).to_string())
                 )
@@ -1067,7 +1064,7 @@ struct TypeCache: Map<uint64_t, Type*> {
                     hash = hash_mix(hash, type->struct_info.fields[i].value);
                     hash = hash_mix(hash, hash_str(type->struct_info.fields[i].name));
                     hash = hash_mix(hash, hash_ptr(type->struct_info.fields[i].type));
-                    hash = hash_mix(hash, type->struct_info.fields[i].inlined);
+                    hash = hash_mix(hash, type->struct_info.fields[i].inline_size);
                     hash = hash_mix(hash, type->struct_info.fields[i].offset);
                 }
                 break;
@@ -1183,7 +1180,7 @@ struct TypeCache: Map<uint64_t, Type*> {
         visited->add(type);
         for (int i = 0; i < type->struct_info.num_fields; i++) {
             Type::Field* field = &type->struct_info.fields[i];
-            if (!field->inlined) continue;
+            if (field->inline_size == -1) continue;
             if (visited->find(field->type)) throw Error::runtime(context, String::new_format("Cannot resolve defers: Inline field '%s' recurses", field->name ? field->name : "<anonymous>"));
             if (field->type->kind != TypeKind_Struct && field->type->kind != TypeKind_Pointer) throw Error::runtime(context, String::new_format("Inline field '%s' is not a struct or pointer type", field->name));
             if (field->type->kind == TypeKind_Pointer && !field->name) throw Error::runtime(context, String::new_format("Inline field is a pointer but has no identifier", field->name));
@@ -1202,7 +1199,7 @@ struct Allocation {
         size(size), data(alloc->malloc<uint8_t>(size)), context(context), type(type), cleanup(cleanup) {}
     ~Allocation() {
         if (size == -1) return;
-        cleanup(data, context, type);
+        if (cleanup) cleanup(data, context, type);
         alloc->free(data);
     }
 
@@ -1262,7 +1259,9 @@ struct Context {
     }
     Variable load(const char* name) {
         Variable* var = lookup_variable(name);
-        return var ? Variable(var->type).lvalue(var->ptr()) : Variable();
+        if (!var) return Variable();
+        if (var->type->is_const) return *var;
+        return Variable(var->type).lvalue(var->ptr());
     }
     Variable store(const char* name, Variable var, void* symbol = NULL) {
         if (variables->peek()->has((char*)name)) return Variable();
@@ -1596,10 +1595,10 @@ enum TokenKind: uint8_t {
     PROCESS_TOKENS(ENUM)
 };
 
-const char* token_table[] = {
+static const char* token_table[] = {
     PROCESS_TOKENS(DECL)
 };
-int num_token_table_entries = sizeof(token_table) / sizeof(*token_table);
+static int num_token_table_entries = sizeof(token_table) / sizeof(*token_table);
 
 struct Token {
     int row, col;
@@ -2384,86 +2383,61 @@ static void parse_operand(Context* context, ByteWriter* buf, TokenQueue* tokens)
             if (!tokens->expect(TOKEN_BRACE_OPEN)) throw Error::parser(tokens->pop(), "Expected '{'");
             while (!tokens->expect(TOKEN_BRACE_CLOSE)) {
                 buf->write(true)->write<int32_t>(tokens->peek()->row)->write<int32_t>(tokens->peek()->col);
-                if (tokens->expect(TOKEN_BRACKET_OPEN)) {
+                bool inlined = false;
+                bool mandatory_name = false;
+                bool mandatory_codeblock = false;
+                if (tokens->expect(TOKEN_inline)) {
                     buf->write(true);
-                    if (!tokens->expect(TOKEN_BRACKET_CLOSE)) while (true) {
-                        if ((token = tokens->expect(TOKEN_TRIPLE_DOT))) {
-                            buf->write(AST_TYPE)->write<int32_t>(token->row)->write<int32_t>(token->col)->write(false)->write(TypeKind_Varargs)->write(false);
-                            if (tokens->expect(TOKEN_BRACKET_CLOSE)) break;
-                            throw Error::parser(tokens->pop(), "Expected ']'");
-                            break;
-                        }
-                        parse_expression(context, buf, tokens, true);
-                        if ((token = tokens->expect(TOKEN_IDENTIFIER))) {
-                            buf->write(true);
-                            buf->write(token->value.string);
-                        }
-                        else buf->write(false);
-                        if (tokens->expect(TOKEN_COMMA)) continue;
-                        if (tokens->expect(TOKEN_BRACKET_CLOSE)) break;
-                        throw Error::parser(tokens->pop(), "Expected ',' or ']'");
+                    if (tokens->expect(TOKEN_PARENTHESIS_OPEN)) {
+                        mandatory_name = true;
+                        buf->write(true);
+                        parse_expression(context, buf, tokens);
+                        if (!tokens->expect(TOKEN_PARENTHESIS_CLOSE)) throw Error::parser(tokens->pop(), "Expected ')'");
                     }
-                    buf->write(AST_END);
-                    if (tokens->expect(TOKEN_DOLLAR)) buf->write(true);
                     else buf->write(false);
-                    parse_expression(context, buf, tokens, true);
+                }
+                else buf->write(false);
+                parse_expression(context, buf, tokens, true);
+                if ((token = tokens->expect(TOKEN_IDENTIFIER))) buf->write(true)->write(token->value.string);
+                else if (tokens->expect(TOKEN_new)) {
+                    if (inlined) throw Error::parser(tokens->pop(), "Inline field cannot be named 'new'");
+                    buf->write(true)->write("new");
+                    mandatory_codeblock = true;
+                }
+                else if (tokens->expect(TOKEN_delete)) {
+                    if (inlined) throw Error::parser(tokens->pop(), "Inline field cannot be named 'delete'");
+                    buf->write(true)->write("delete");
+                    mandatory_codeblock = true;
+                }
+                else {
+                    if (!inlined) throw Error::parser(tokens->pop(), "Expected 'new', 'delete' or identifier");
+                    if (mandatory_name) throw Error::parser(tokens->pop(), "Expected identifier");
+                    buf->write(false);
+                }
+                if (tokens->expect(TOKEN_EQUALS)) {
+                    if (mandatory_codeblock) throw Error::parser(tokens->pop(), "Expected '{'");
+                    if (inlined) throw Error::parser(tokens->pop(), "Cannot pre-assign to an inline field");
+                    buf->write(true)->write(false);
+                    parse_expression(context, buf, tokens);
+                }
+                else {
+                    CaptureMode capture_mode = CaptureMode_None;
                     if (tokens->expect(TOKEN_BRACKET_OPEN)) {
-                        if (tokens->expect(TOKEN_EQUALS)) buf->write(CaptureMode_CopyPerCall);
-                        else if (tokens->expect(TOKEN_TILDE)) buf->write(CaptureMode_CopyOnce);
-                        else if (tokens->expect(TOKEN_DOLLAR)) buf->write(CaptureMode_Shared);
+                        if (tokens->expect(TOKEN_EQUALS)) capture_mode = CaptureMode_CopyPerCall;
+                        else if (tokens->expect(TOKEN_TILDE)) capture_mode = CaptureMode_CopyOnce;
+                        else if (tokens->expect(TOKEN_DOLLAR)) capture_mode = CaptureMode_Shared;
                         else throw Error::parser(tokens->pop(), "Expected '=', `~` or '$'");
                         if (!tokens->expect(TOKEN_BRACKET_CLOSE)) throw Error::parser(tokens->pop(), "Expected ']'");
                     }
-                    else buf->write(CaptureMode_None);
-                    buf->push();
-                    if ((token = tokens->expect(TOKEN_BRACE_OPEN))) parse_codeblock(context, buf, tokens, token);
-                    else throw Error::parser(tokens->pop(), "Expected '{'");
-                    buf->pop();
-                }
-                else {
-                    buf->write(false);
-                    bool inlined = tokens->expect(TOKEN_inline);
-                    buf->write(inlined);
-                    parse_expression(context, buf, tokens, true);
-                    bool mandatory_codeblock = false;
-                    if ((token = tokens->expect(TOKEN_IDENTIFIER))) buf->write(true)->write(token->value.string);
-                    else if (tokens->expect(TOKEN_new)) {
-                        buf->write(true)->write("new");
-                        mandatory_codeblock = true;
-                    }
-                    else if (tokens->expect(TOKEN_delete)) {
-                        buf->write(true)->write("delete");
-                        mandatory_codeblock = true;
-                    }
-                    else {
-                        if (!inlined) throw Error::parser(tokens->pop(), "Expected 'new', 'delete' or identifier");
-                        buf->write(false);
-                    }
-                    if (tokens->expect(TOKEN_EQUALS)) {
-                        if (mandatory_codeblock) throw Error::parser(tokens->pop(), "Expected '{'");
+                    if ((token = tokens->expect(TOKEN_BRACE_OPEN))) {
                         if (inlined) throw Error::parser(tokens->pop(), "Cannot pre-assign to an inline field");
-                        buf->write(true)->write(false);
-                        parse_expression(context, buf, tokens);
+                        buf->write(true)->write(true)->write(capture_mode);
+                        buf->push();
+                        parse_codeblock(context, buf, tokens, token);
+                        buf->pop();
                     }
-                    else {
-                        CaptureMode capture_mode = CaptureMode_None;
-                        if (tokens->expect(TOKEN_BRACKET_OPEN)) {
-                            if (tokens->expect(TOKEN_EQUALS)) capture_mode = CaptureMode_CopyPerCall;
-                            else if (tokens->expect(TOKEN_TILDE)) capture_mode = CaptureMode_CopyOnce;
-                            else if (tokens->expect(TOKEN_DOLLAR)) capture_mode = CaptureMode_Shared;
-                            else throw Error::parser(tokens->pop(), "Expected '=', `~` or '$'");
-                            if (!tokens->expect(TOKEN_BRACKET_CLOSE)) throw Error::parser(tokens->pop(), "Expected ']'");
-                        }
-                        if ((token = tokens->expect(TOKEN_BRACE_OPEN))) {
-                            if (inlined) throw Error::parser(tokens->pop(), "Cannot pre-assign to an inline field");
-                            buf->write(true)->write(true)->write(capture_mode);
-                            buf->push();
-                            parse_codeblock(context, buf, tokens, token);
-                            buf->pop();
-                        }
-                        else if (capture_mode != CaptureMode_None || mandatory_codeblock) throw Error::parser(tokens->pop(), "Expected '{'");
-                        else buf->write(false);
-                    }
+                    else if (capture_mode != CaptureMode_None || mandatory_codeblock) throw Error::parser(tokens->pop(), "Expected '{'");
+                    else buf->write(false);
                 }
                 if (tokens->expect(TOKEN_AT)) {
                     buf->write(true)->write(false);
@@ -2492,19 +2466,20 @@ static void parse_operand(Context* context, ByteWriter* buf, TokenQueue* tokens)
             token->type == TOKEN_HASHTAG      ? AST_POINTER          :
             token->type == TOKEN_const        ? AST_CONST            : AST_END
         )->write<int32_t>(token->row)->write<int32_t>(token->col);
-        else if (
-            (token = tokens->expect(TOKEN_BRACKET_OPEN)) ||
-            (token = tokens->expect(TOKEN_PARENTHESIS_OPEN))
-        ) {
-            TokenKind end = token->type == TOKEN_BRACKET_OPEN ? TOKEN_BRACKET_CLOSE : TOKEN_PARENTHESIS_CLOSE;
-            buf->write(token->type == TOKEN_BRACKET_OPEN ? AST_ARRAY : AST_CALL)->write<int32_t>(token->row)->write<int32_t>(token->col);
-            if (!tokens->expect(end)) while (true) {
+        else if ((token = tokens->expect(TOKEN_PARENTHESIS_OPEN))) {
+            buf->write(AST_CALL)->write<int32_t>(token->row)->write<int32_t>(token->col);
+            if (!tokens->expect(TOKEN_PARENTHESIS_CLOSE)) while (true) {
                 parse_expression(context, buf, tokens);
                 if (tokens->expect(TOKEN_COMMA)) continue;
-                if (tokens->expect(end)) break;
-                throw Error::parser(tokens->pop(), String::new_format("Expected ',' or '%s'", token_table[end]));
+                if (tokens->expect(TOKEN_PARENTHESIS_CLOSE)) break;
+                throw Error::parser(tokens->pop(), "Expected ',' or ')'");
             }
             buf->write(AST_END);
+        }
+        else if ((token = tokens->expect(TOKEN_BRACKET_OPEN))) {
+            buf->write(AST_ARRAY)->write<int32_t>(token->row)->write<int32_t>(token->col);
+            parse_expression(context, buf, tokens);
+            if (!tokens->expect(TOKEN_BRACKET_CLOSE)) throw Error::parser(tokens->pop(), "Expected ']'");
         }
         else if ((token = tokens->expect(TOKEN_REVERSE_ARROW))) {
             buf->write(AST_FUNCTION)->write<int32_t>(token->row)->write<int32_t>(token->col);
@@ -3186,7 +3161,7 @@ static Variable walk_struct(Variable str, const char* name) {
     Type::Field* field = NULL;
     for (int i = 0; i < str.type->struct_info.num_fields && !field; i++) {
         Type::Field* f = &str.type->struct_info.fields[i];
-        if (f->inlined && !f->name) {
+        if (f->inline_size != -1 && !f->name) {
             Variable inlined(f->type);
             inlined.as<void*>() = str.as<char*>() + f->offset;
             Variable var = walk_struct(inlined, name);
@@ -3196,12 +3171,13 @@ static Variable walk_struct(Variable str, const char* name) {
         if (strcmp(f->name, name) == 0) field = f;
     }
     if (!field) return Variable();
-    if (field->inlined) {
+    if (field->inline_size != -1) {
         Variable var = Variable(field->type);
         var.as<void*>() = str.as<char*>() + field->offset;
         return var;
     }
     Variable var = Variable(field->type).lvalue(str.as<char*>() + field->offset);
+    if (var.type->is_const) var.rvalue();
     if (field->type->kind == TypeKind_Function) {
         Function* func = var.as<Function*>();
         if (func && !func->is_native()) {
@@ -3216,10 +3192,13 @@ static Variable walk_struct(Variable str, const char* name) {
 static void init_struct(Context* context, Variable* str) {
     for (int i = 0; i < str->type->struct_info.num_fields; i++) {
         Type::Field* field = &str->type->struct_info.fields[i];
-        if (field->inlined && field->type->kind == TypeKind_Struct) {
+        if (field->inline_size != -1 && field->type->kind == TypeKind_Struct) {
             Variable field_var = Variable(field->type);
+            for (int i = 0; i < field->inline_size; i++) {
+                field_var.as<char*>() = str->as<char*>() + field->offset + field->type->size * i;
+                init_struct(context, &field_var);
+            }
             field_var.as<char*>() = str->as<char*>() + field->offset;
-            init_struct(context, &field_var);
         }
         else {
             Variable field_var = Variable(field->type).lvalue(str->as<char*>() + field->offset);
@@ -3307,7 +3286,6 @@ static void init_struct(Context* context, Variable* str) {
 #define _ASSIGN(node, _, eval, ...) { \
     Variable var2 = stack->pop(); \
     Variable var1 = stack->pop(); \
-    if (var1.type->is_const) throw Error::runtime(context, "Cannot write into a constant"); \
     eval(node) \
     var2 = cast(context, var1.type, var2); \
     var1 << var2; \
@@ -3410,6 +3388,7 @@ static struct {
     UNARY(AST_DEREFERENCE, VarType_Pointer, {
         Variable ptr = stack->pop();
         Variable var = ptr.deref();
+        if (var.type->is_const) var.rvalue();
         stack->push(var);
     }),
     UNARY(AST_DEREFERENCE, VarType_Type, {
@@ -3466,21 +3445,17 @@ static struct {
     }),
     UNARY(AST_ARRAY, VarType_Pointer, {
         Variable ptr = stack->pop();
-        List<Variable> args;
-        execute_expressions(context, reader, &args);
-        if (args.size != 1) throw Error::runtime(context, "Expected only 1 argument");
-        Variable index = args.get(0);
+        Variable index = cast(context, context->type_cache->primitive(TypeKind_Int64)->unsign(context), execute_expression(context, reader));
         Variable out = ptr.deref(index.as<uint64_t>());
+        if (out.type->is_const) out.rvalue();
         stack->push(out);
     }),
     UNARY(AST_ARRAY, VarType_Struct, {
         Variable str = stack->pop();
-        if (!str.as<void*>()) throw Error::runtime(context, "Struct is unset");
-        Variable func = walk_struct(str, "[]");
-        if (!func.type) throw Error::runtime(context, "Struct doesn't have an array function");
-        List<Variable> args;
-        execute_expressions(context, reader, &args);
-        stack->push(execute_function(context, &func, &args));
+        Variable index = cast(context, context->type_cache->primitive(TypeKind_Int64)->unsign(context), execute_expression(context, reader));
+        Variable out = Variable(str.type);
+        out.as<char*>() = str.as<char*>() + index.as<uint64_t>() * str.type->size;
+        stack->push(out);
     }),
     UNARY(AST_CALL, VarType_Function, {
         Variable var = stack->pop();
@@ -3618,7 +3593,7 @@ static Variable execute_expression_node(Context* context, ByteReader* reader, St
                 if (reader->read<bool>()) {
                     Variable base = execute_expression(context, reader);
                     if (!matches(&base, VarType_Type)) throw Error::runtime(context, "Not a type");
-                    Type::Field field = { .offset = 0, .value = 0, .inlined = true };
+                    Type::Field field = { .offset = 0, .value = 0, .inline_size = 1 };
                     field.name = (char*)"super";
                     field.type = base.as<Type*>();
                     fields.add(field);
@@ -3629,36 +3604,30 @@ static Variable execute_expression_node(Context* context, ByteReader* reader, St
                     context->set_location(reader, &hook);
                     field.offset = -1;
                     if (reader->read<bool>()) {
-                        List<Type::Param> params;
-                        execute_params(context, reader, &params);
-                        bool lvalue_return = reader->read<bool>();
-                        Variable return_type = execute_expression(context, reader);
-                        if (!matches(&return_type, VarType_Type)) throw Error::runtime(context, "Return type is not a type");
-                        CaptureMode capture_mode = reader->read<CaptureMode>();
-                        field.inlined = false;
-                        field.name = (char*)"[]";
-                        field.type = context->type_cache->function(return_type.as<Type*>(), &params, lvalue_return);
-                        field.value = (uintptr_t)generate_function(context, reader, field.type, "[]", context->call_stack->peek()->file, false, capture_mode);
-                    }
-                    else {
-                        field.inlined = reader->read<bool>();
-                        Variable type = execute_expression(context, reader);
-                        if (!matches(&type, VarType_Type)) throw Error::runtime(context, "Not a type");
-                        field.type = type.as<Type*>();
-                        field.name = reader->read<bool>() ? reader->read<char*>() : NULL;
-                        if (field.name && (strcmp(field.name, "new") == 0 || strcmp(field.name, "delete") == 0)) {
-                            if (field.type->kind == TypeKind_Function) {
-                                if (field.type->function_info.num_params > 0) throw Error::runtime(context, "Cannot take any parameters");
-                            }
-                            else throw Error::runtime(context, "Must be a function");
-                        }
                         if (reader->read<bool>()) {
-                            if (reader->read<bool>()) {
-                                CaptureMode capture_mode = reader->read<CaptureMode>();
-                                field.value = (uintptr_t)generate_function(context, reader, field.type, field.name, context->call_stack->peek()->file, false, capture_mode);
-                            }
-                            else field.value = cast(context, field.type, execute_expression(context, reader)).as<uint64_t>();
+                            Variable size = execute_expression(context, reader);
+                            if (!matches(&size, VarType_Integer)) throw Error::runtime(context, "Inline size must be an integer");
+                            field.inline_size = size.as<uint32_t>();
                         }
+                        else field.inline_size = 1;
+                    }
+                    else field.inline_size = -1;
+                    Variable type = execute_expression(context, reader);
+                    if (!matches(&type, VarType_Type)) throw Error::runtime(context, "Not a type");
+                    field.type = type.as<Type*>();
+                    field.name = reader->read<bool>() ? reader->read<char*>() : NULL;
+                    if (field.name && (strcmp(field.name, "new") == 0 || strcmp(field.name, "delete") == 0)) {
+                        if (field.type->kind == TypeKind_Function) {
+                            if (field.type->function_info.num_params > 0) throw Error::runtime(context, "Cannot take any parameters");
+                        }
+                        else throw Error::runtime(context, "Must be a function");
+                    }
+                    if (reader->read<bool>()) {
+                        if (reader->read<bool>()) {
+                            CaptureMode capture_mode = reader->read<CaptureMode>();
+                            field.value = (uintptr_t)generate_function(context, reader, field.type, field.name, context->call_stack->peek()->file, false, capture_mode);
+                        }
+                        else field.value = cast(context, field.type, execute_expression(context, reader)).as<uint64_t>();
                     }
                     if (reader->read<bool>()) {
                         bool relative = reader->read<bool>();
@@ -3775,7 +3744,7 @@ static Variable execute_expression_node(Context* context, ByteReader* reader, St
                     Variable size = execute_expression(context, reader);
                     if (!matches(&size, VarType_Integer)) throw Error::runtime(context, "Array size is not an integer");
                     execute_expressions(context, reader, &init_list);
-                    out.as<void*>() = context->new_allocation(type->value_size() * size.as<uint64_t>(), scoped, type);
+                    out.as<void*>() = context->new_allocation(type->size * size.as<uint64_t>(), scoped, type);
                     for (int i = 0; i < (init_list.size < size.as<uint64_t>() ? init_list.size : size.as<uint64_t>()); i++) {
                         Variable var = cast(context, type, init_list.items[i]);
                         out.deref(i) << var;
@@ -4143,6 +4112,7 @@ static void handle_segfault(int signum, siginfo_t* info) { \
 #endif
     if (in_code) longjmp(segfault_jump_buffer, 1);
     else if (user_segfault_handler) user_segfault_handler(segfault_addr);
+    else printf("[PawScript Segfault Handler] Uncaught segmentation fault outside of script\n");
     abort();
 }
 
